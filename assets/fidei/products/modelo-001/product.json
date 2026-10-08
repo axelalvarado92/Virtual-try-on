@@ -1,0 +1,15 @@
+{
+  "id": "modelo-001",
+  "name": "Modelo 001",
+  "try_on": {
+    "image": "try-on.png",
+    "reference_eye_left": {
+      "x": 360,
+      "y": 550
+    },
+    "reference_eye_right": {
+      "x": 1080,
+      "y": 550
+    }
+  }
+}
