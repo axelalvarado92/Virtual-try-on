@@ -4,12 +4,12 @@
   "try_on": {
     "image": "try-on.png",
     "reference_eye_left": {
-      "x": 360,
-      "y": 550
+      "x": 412.62,
+      "y": 516.49
     },
     "reference_eye_right": {
-      "x": 1080,
-      "y": 550
+      "x": 1050.37,
+      "y": 514.49
     }
   }
 }

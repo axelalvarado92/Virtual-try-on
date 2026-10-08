@@ -70,6 +70,7 @@ __pycache__/
 # Carpetas con info sensible
 supabase/
 tests/
+assets/
 
 # Archivos con info sensible
 package-lock.json

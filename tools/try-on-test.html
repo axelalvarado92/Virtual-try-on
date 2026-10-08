@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Try-On Test</title>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+
+        .controls {
+            margin-bottom: 20px;
+        }
+
+        input {
+            margin-right: 20px;
+        }
+
+        canvas {
+            display: block;
+            max-width: 900px;
+            width: 100%;
+            height: auto;
+            border: 1px solid #ccc;
+        }
+
+        #result {
+            margin-top: 20px;
+            font-family: monospace;
+            white-space: pre-line;
+        }
+    </style>
+</head>
+
+<body>
+
+    <h1>Try-On Test</h1>
+
+    <div class="controls">
+        <label>
+            Selfie:
+            <input type="file" id="selfieInput" accept="image/*">
+        </label>
+
+        <label>
+            Anteojo:
+            <input type="file" id="glassesInput" accept="image/png">
+        </label>
+    </div>
+
+    <canvas id="canvas"></canvas>
+
+    <div id="result">
+        Cargá la selfie y el anteojo.
+    </div>
+
+    <script>
+        const selfieInput = document.getElementById("selfieInput");
+        const glassesInput = document.getElementById("glassesInput");
+        const canvas = document.getElementById("canvas");
+        const ctx = canvas.getContext("2d");
+        const result = document.getElementById("result");
+
+        const selfie = new Image();
+        const glasses = new Image();
+
+        /*
+         * Landmarks obtenidos anteriormente con Rekognition.
+         * Son coordenadas NORMALIZADAS.
+         */
+        const face = {
+            eye_left: {
+                x: 0.40763723850250244,
+                y: 0.4510592520236969
+            },
+            eye_right: {
+                x: 0.5962836146354675,
+                y: 0.4508611261844635
+            }
+        };
+
+        /*
+         * Puntos de referencia del PNG del anteojo.
+         */
+        const reference = {
+            eye_left: {
+                x: 412.62,
+                y: 516.49
+            },
+            eye_right: {
+                x: 1050.37,
+                y: 514.49
+            }
+        };
+
+        let selfieLoaded = false;
+        let glassesLoaded = false;
+
+        selfieInput.addEventListener("change", () => {
+            const file = selfieInput.files[0];
+
+            if (!file) {
+                return;
+            }
+
+            selfie.onload = () => {
+                selfieLoaded = true;
+                tryRender();
+            };
+
+            selfie.src = URL.createObjectURL(file);
+        });
+
+        glassesInput.addEventListener("change", () => {
+            const file = glassesInput.files[0];
+
+            if (!file) {
+                return;
+            }
+
+            glasses.onload = () => {
+                glassesLoaded = true;
+                tryRender();
+            };
+
+            glasses.src = URL.createObjectURL(file);
+        });
+
+        function tryRender() {
+            if (!selfieLoaded || !glassesLoaded) {
+                return;
+            }
+
+            renderTryOn();
+        }
+
+        function renderTryOn() {
+
+            /*
+             * 1. Canvas = dimensiones reales de la selfie.
+             */
+            canvas.width = selfie.naturalWidth;
+            canvas.height = selfie.naturalHeight;
+
+            /*
+             * 2. Dibujamos la selfie.
+             */
+            ctx.clearRect(
+                0,
+                0,
+                canvas.width,
+                canvas.height
+            );
+
+            ctx.drawImage(
+                selfie,
+                0,
+                0
+            );
+
+            /*
+             * 3. Convertimos landmarks normalizados
+             *    a coordenadas de píxel.
+             */
+            const left = {
+                x: face.eye_left.x * canvas.width,
+                y: face.eye_left.y * canvas.height
+            };
+
+            const right = {
+                x: face.eye_right.x * canvas.width,
+                y: face.eye_right.y * canvas.height
+            };
+
+            /*
+             * 4. Distancia entre ojos de la selfie.
+             */
+            const faceDx = right.x - left.x;
+            const faceDy = right.y - left.y;
+
+            const faceEyeDistance = Math.sqrt(
+                faceDx * faceDx +
+                faceDy * faceDy
+            );
+
+            /*
+             * 5. Ángulo de los ojos de la selfie.
+             */
+            const faceAngle = Math.atan2(
+                faceDy,
+                faceDx
+            );
+
+            /*
+             * 6. Distancia entre ojos del PNG.
+             */
+            const refDx =
+                reference.eye_right.x -
+                reference.eye_left.x;
+
+            const refDy =
+                reference.eye_right.y -
+                reference.eye_left.y;
+
+            const referenceEyeDistance = Math.sqrt(
+                refDx * refDx +
+                refDy * refDy
+            );
+
+            /*
+             * 7. Escala necesaria.
+             */
+            const scale =
+                faceEyeDistance /
+                referenceEyeDistance;
+
+            /*
+             * 8. Ángulo del PNG.
+             */
+            const referenceAngle = Math.atan2(
+                refDy,
+                refDx
+            );
+
+            /*
+             * 9. Rotación necesaria.
+             */
+            const rotation =
+                faceAngle -
+                referenceAngle;
+
+            /*
+             * 10. Centro de los ojos de la selfie.
+             */
+            const faceCenterX =
+                (left.x + right.x) / 2;
+
+            const faceCenterY =
+                (left.y + right.y) / 2;
+
+            /*
+             * 11. Centro de los ojos del PNG.
+             */
+            const referenceCenterX =
+                (reference.eye_left.x +
+                 reference.eye_right.x) / 2;
+
+            const referenceCenterY =
+                (reference.eye_left.y +
+                 reference.eye_right.y) / 2;
+
+            /*
+             * 12. Dibujar anteojo.
+             *
+             * Movemos el origen al centro de los ojos
+             * de la selfie.
+             */
+            ctx.save();
+
+            ctx.translate(
+                faceCenterX,
+                faceCenterY
+            );
+
+            ctx.rotate(rotation);
+
+            ctx.scale(
+                scale,
+                scale
+            );
+
+            /*
+             * Compensamos el centro de referencia
+             * del PNG.
+             */
+            ctx.drawImage(
+                glasses,
+                -referenceCenterX,
+                -referenceCenterY
+            );
+
+            ctx.restore();
+
+            /*
+             * 13. Dibujamos los landmarks encima
+             *     para poder comprobar la alineación.
+             */
+            drawPoint(
+                left.x,
+                left.y,
+                "L"
+            );
+
+            drawPoint(
+                right.x,
+                right.y,
+                "R"
+            );
+
+            /*
+             * 14. Información de diagnóstico.
+             */
+            result.textContent =
+                `Selfie: ${canvas.width} × ${canvas.height}
+                
+Distancia ojos selfie: ${faceEyeDistance.toFixed(2)} px
+Distancia referencia: ${referenceEyeDistance.toFixed(2)} px
+
+Scale: ${scale.toFixed(4)}
+
+Ángulo selfie: ${(faceAngle * 180 / Math.PI).toFixed(2)}°
+Ángulo referencia: ${(referenceAngle * 180 / Math.PI).toFixed(2)}°
+Rotación aplicada: ${(rotation * 180 / Math.PI).toFixed(2)}°
+
+Centro ojos selfie:
+x=${faceCenterX.toFixed(2)}
+y=${faceCenterY.toFixed(2)}`;
+        }
+
+        function drawPoint(x, y, label) {
+
+            ctx.beginPath();
+
+            ctx.arc(
+                x,
+                y,
+                6,
+                0,
+                Math.PI * 2
+            );
+
+            ctx.fill();
+
+            ctx.font = "20px Arial";
+
+            ctx.fillText(
+                label,
+                x + 10,
+                y
+            );
+        }
+    </script>
+
+</body>
+</html>
