@@ -4,6 +4,7 @@ import {
   FilesetResolver,
 } from "@mediapipe/tasks-vision";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { products, defaultProductId } from "./products.js";
 
 async function main() {
 
@@ -51,7 +52,7 @@ async function main() {
     }
   );
   
-  textureLoader.load("/axel-selfie.jpg", (texture) => {
+  textureLoader.load("/axel-selfie-2.jpeg", (texture) => {
     const image = texture.image;
 
     let faceRotation = new THREE.Euler(0, 0, 0, "YXZ");
@@ -208,11 +209,14 @@ async function main() {
     let glassesModel = new THREE.Group();
     glasses.add(glassesModel);
 
+    let currentProduct = products[defaultProductId];
+    let selectedProductId = defaultProductId;
+
     const config = {
-      scale: 1,
-      offsetX: 0,
-      offsetY: 0,
-      offsetZ: 0,
+      scale: currentProduct.calibration.scale,
+      offsetX: currentProduct.calibration.offsetX,
+      offsetY: currentProduct.calibration.offsetY,
+      offsetZ: currentProduct.calibration.offsetZ,
     };
     
     // Aplicar transformación facial usando landmarks
@@ -263,43 +267,82 @@ async function main() {
 
     const gltfLoader = new GLTFLoader();
 
+    let productLoadVersion = 0;
+    
+    function loadProduct(productId) {
+    const product = products[productId];
+    
+    if (!product) {
+    console.error("Producto inexistente:", productId);
+    return;
+    }
+    
+    const loadVersion = ++productLoadVersion;
+    
     gltfLoader.load(
-      "/glasses.glb",
-      (gltf) => {
-        const model = gltf.scene;
-
-        const box = new THREE.Box3().setFromObject(model);
-        const size = box.getSize(new THREE.Vector3());
-        const center = box.getCenter(new THREE.Vector3());
-        
-        model.position.sub(center);
-        model.updateMatrixWorld(true);
-        
-        console.log("Dimensiones del GLB:", size);
-        console.log("Centro original del GLB:", center);
+    product.modelUrl,
+    (gltf) => {
+    if (loadVersion !== productLoadVersion) {
+    return;
+    }
     
-        console.log("Dimensiones del GLB:", size);
-        console.log("Centro del GLB:", center);
+      const model = gltf.scene;
     
-        glasses.remove(glassesModel);
-        glassesModel = model;
-        glasses.add(glassesModel);
+      const box = new THREE.Box3().setFromObject(model);
+      const center = box.getCenter(new THREE.Vector3());
     
-        glassesModel.rotation.set(0, -Math.PI / 2, 0);
-
-        const modelBaseScale = 5;
-        glassesModel.scale.setScalar(modelBaseScale * config.scale);
-        glassesModel.position.set(
-          config.offsetX,
-          config.offsetY,
-          config.offsetZ
-        );
-      },
-      undefined,
-      (error) => {
-        console.error("Error al cargar glasses.glb:", error);
-      }
+      model.position.sub(center);
+    
+      model.rotation.set(
+        product.modelRotation.x,
+        product.modelRotation.y,
+        product.modelRotation.z
+      );
+    
+      currentProduct = product;
+      selectedProductId = productId;
+    
+      config.scale = product.calibration.scale;
+      config.offsetX = product.calibration.offsetX;
+      config.offsetY = product.calibration.offsetY;
+      config.offsetZ = product.calibration.offsetZ;
+    
+      model.scale.setScalar(config.scale);
+    
+      model.position.set(
+        config.offsetX,
+        config.offsetY,
+        config.offsetZ
+      );
+    
+      glasses.remove(glassesModel);
+      glassesModel = model;
+      glasses.add(glassesModel);
+    
+      scaleInput.value = config.scale;
+      xInput.value = config.offsetX;
+      yInput.value = config.offsetY;
+      zInput.value = config.offsetZ;
+    
+      scaleValue.textContent = config.scale.toFixed(2);
+      xValue.textContent = config.offsetX;
+      yValue.textContent = config.offsetY;
+      zValue.textContent = config.offsetZ;
+    
+      console.log("Producto cargado:", currentProduct.name);
+    },
+    undefined,
+    (error) => {
+      console.error(
+        "Error al cargar el producto:",
+        product.modelUrl,
+        error
+      );
+    }
+    
     );
+  }
+
     
     const panel = document.createElement("div");
 
@@ -317,8 +360,24 @@ async function main() {
     
     panel.innerHTML = `
       <div style="margin-bottom:8px;font-weight:bold;">
+        Probador virtual
+      </div>
+      
+      <label>
+        Modelo
+        <select id="product-selector" style="width:100%;margin-top:4px;">
+          ${Object.values(products).map(product =>
+            `<option value="${product.id}" ${
+              product.id === defaultProductId ? "selected" : ""
+            }>${product.name}</option>`
+          ).join("")}
+        </select>
+      </label>
+      
+      <div style="margin-top:12px;margin-bottom:8px;font-weight:bold;">
         Calibración de gafas
       </div>
+
     
       <label>
         Escala
@@ -389,6 +448,13 @@ async function main() {
     
     document.body.appendChild(panel);
 
+    const productSelector =
+      document.getElementById("product-selector");
+    
+    productSelector.addEventListener("change", () => {
+      loadProduct(productSelector.value);
+    });
+
     const scaleInput =
       document.getElementById("glasses-scale");
     
@@ -453,6 +519,8 @@ async function main() {
       zValue.textContent =
         config.offsetZ;
     });
+
+    loadProduct(defaultProductId);
   
     function animate() {
       requestAnimationFrame(animate);
