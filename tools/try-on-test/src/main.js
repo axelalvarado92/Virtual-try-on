@@ -3,6 +3,7 @@ import {
   FaceLandmarker,
   FilesetResolver,
 } from "@mediapipe/tasks-vision";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 
 async function main() {
 
@@ -50,8 +51,10 @@ async function main() {
     }
   );
   
-  textureLoader.load("/axel-selfie-2.jpeg", (texture) => {
+  textureLoader.load("/axel-selfie.jpg", (texture) => {
     const image = texture.image;
+
+    let faceRotation = new THREE.Euler(0, 0, 0, "YXZ");
   
     const result = faceLandmarker.detect(image);
   
@@ -80,6 +83,34 @@ async function main() {
         "Matrix data:",
         facialMatrix.data
       );
+
+      const matrix = facialMatrix.data;
+
+      console.table([
+        [matrix[0], matrix[1], matrix[2], matrix[3]],
+        [matrix[4], matrix[5], matrix[6], matrix[7]],
+        [matrix[8], matrix[9], matrix[10], matrix[11]],
+        [matrix[12], matrix[13], matrix[14], matrix[15]],
+      ]);
+
+      const rotationMatrix = new THREE.Matrix4().fromArray(matrix);
+
+      faceRotation.setFromRotationMatrix(
+        rotationMatrix,
+        "YXZ"
+      );
+      
+      console.log("Rotación facial (radianes):", {
+        x: faceRotation.x,
+        y: faceRotation.y,
+        z: faceRotation.z,
+      });
+      
+      console.log("Rotación facial (grados):", {
+        x: THREE.MathUtils.radToDeg(faceRotation.x),
+        y: THREE.MathUtils.radToDeg(faceRotation.y),
+        z: THREE.MathUtils.radToDeg(faceRotation.z),
+      });
     }
 
     
@@ -171,197 +202,18 @@ async function main() {
 
     scene.add(light);
   
+    
     const glasses = new THREE.Group();
-
-    const frameMaterial = new THREE.MeshStandardMaterial({
-      roughness: 0.4,
-      metalness: 0.2,
-    });
     
-    const lensMaterial = new THREE.MeshStandardMaterial({
-      transparent: true,
-      opacity: 0.15,
-      roughness: 0.1,
-      metalness: 0,
-    });
-    
-    const lensWidth = 55;
-    const lensHeight = 40;
-    const frameThickness = 5;
-    const lensDepth = 6;
-    const bridgeWidth = 20;
-    
-    // Lente izquierdo
-    const leftLens = new THREE.Mesh(
-      new THREE.BoxGeometry(
-        lensWidth,
-        lensHeight,
-        lensDepth
-      ),
-      lensMaterial
-    );
-    
-    leftLens.position.x = -38;
-    
-    glasses.add(leftLens);
-    
-    // Lente derecho
-    const rightLens = new THREE.Mesh(
-      new THREE.BoxGeometry(
-        lensWidth,
-        lensHeight,
-        lensDepth
-      ),
-      lensMaterial
-    );
-    
-    rightLens.position.x = 38;
-    
-    glasses.add(rightLens);
-    
-    // Marcos: izquierda
-    const leftTop = new THREE.Mesh(
-      new THREE.BoxGeometry(
-        lensWidth,
-        frameThickness,
-        lensDepth
-      ),
-      frameMaterial
-    );
-    
-    leftTop.position.set(-38, lensHeight / 2, 0);
-    
-    glasses.add(leftTop);
-    
-    const leftBottom = new THREE.Mesh(
-      new THREE.BoxGeometry(
-        lensWidth,
-        frameThickness,
-        lensDepth
-      ),
-      frameMaterial
-    );
-    
-    leftBottom.position.set(-38, -lensHeight / 2, 0);
-    
-    glasses.add(leftBottom);
-    
-    const leftSideOuter = new THREE.Mesh(
-      new THREE.BoxGeometry(
-        frameThickness,
-        lensHeight,
-        lensDepth
-      ),
-      frameMaterial
-    );
-    
-    leftSideOuter.position.set(
-      -38 - lensWidth / 2,
-      0,
-      0
-    );
-    
-    glasses.add(leftSideOuter);
-    
-    const leftSideInner = new THREE.Mesh(
-      new THREE.BoxGeometry(
-        frameThickness,
-        lensHeight,
-        lensDepth
-      ),
-      frameMaterial
-    );
-    
-    leftSideInner.position.set(
-      -38 + lensWidth / 2,
-      0,
-      0
-    );
-    
-    glasses.add(leftSideInner);
-    
-    // Marcos: derecha
-    const rightTop = new THREE.Mesh(
-      new THREE.BoxGeometry(
-        lensWidth,
-        frameThickness,
-        lensDepth
-      ),
-      frameMaterial
-    );
-    
-    rightTop.position.set(38, lensHeight / 2, 0);
-    
-    glasses.add(rightTop);
-    
-    const rightBottom = new THREE.Mesh(
-      new THREE.BoxGeometry(
-        lensWidth,
-        frameThickness,
-        lensDepth
-      ),
-      frameMaterial
-    );
-    
-    rightBottom.position.set(38, -lensHeight / 2, 0);
-    
-    glasses.add(rightBottom);
-    
-    const rightSideOuter = new THREE.Mesh(
-      new THREE.BoxGeometry(
-        frameThickness,
-        lensHeight,
-        lensDepth
-      ),
-      frameMaterial
-    );
-    
-    rightSideOuter.position.set(
-      38 + lensWidth / 2,
-      0,
-      0
-    );
-    
-    glasses.add(rightSideOuter);
-    
-    const rightSideInner = new THREE.Mesh(
-      new THREE.BoxGeometry(
-        frameThickness,
-        lensHeight,
-        lensDepth
-      ),
-      frameMaterial
-    );
-    
-    rightSideInner.position.set(
-      38 - lensWidth / 2,
-      0,
-      0
-    );
-    
-    glasses.add(rightSideInner);
-    
-    // Puente
-    const bridge = new THREE.Mesh(
-      new THREE.BoxGeometry(
-        bridgeWidth,
-        frameThickness,
-        lensDepth
-      ),
-      frameMaterial
-    );
-    
-    bridge.position.set(0, 0, 0);
-    
-    glasses.add(bridge);
-
-    const glassesModel = new THREE.Group();
-
-    while (glasses.children.length > 0) {
-      glassesModel.add(glasses.children[0]);
-    }
-    
+    let glassesModel = new THREE.Group();
     glasses.add(glassesModel);
+
+    const config = {
+      scale: 1,
+      offsetX: 0,
+      offsetY: 0,
+      offsetZ: 0,
+    };
     
     // Aplicar transformación facial usando landmarks
     const leftEye = landmarks[33];
@@ -397,9 +249,10 @@ async function main() {
     );
     
     glasses.rotation.set(
-      0,
-      0,
-      eyeAngle
+      faceRotation.x,
+      faceRotation.y,
+      eyeAngle + faceRotation.z,
+      "YXZ"
     );
     
     glasses.scale.setScalar(faceScale);
@@ -408,12 +261,45 @@ async function main() {
     
     scene.add(glasses);
 
-    const config = {
-      scale: 1,
-      offsetX: 0,
-      offsetY: 0,
-      offsetZ: 0,
-    };
+    const gltfLoader = new GLTFLoader();
+
+    gltfLoader.load(
+      "/glasses.glb",
+      (gltf) => {
+        const model = gltf.scene;
+
+        const box = new THREE.Box3().setFromObject(model);
+        const size = box.getSize(new THREE.Vector3());
+        const center = box.getCenter(new THREE.Vector3());
+        
+        model.position.sub(center);
+        model.updateMatrixWorld(true);
+        
+        console.log("Dimensiones del GLB:", size);
+        console.log("Centro original del GLB:", center);
+    
+        console.log("Dimensiones del GLB:", size);
+        console.log("Centro del GLB:", center);
+    
+        glasses.remove(glassesModel);
+        glassesModel = model;
+        glasses.add(glassesModel);
+    
+        glassesModel.rotation.set(0, -Math.PI / 2, 0);
+
+        const modelBaseScale = 5;
+        glassesModel.scale.setScalar(modelBaseScale * config.scale);
+        glassesModel.position.set(
+          config.offsetX,
+          config.offsetY,
+          config.offsetZ
+        );
+      },
+      undefined,
+      (error) => {
+        console.error("Error al cargar glasses.glb:", error);
+      }
+    );
     
     const panel = document.createElement("div");
 
@@ -439,9 +325,9 @@ async function main() {
         <input
           id="glasses-scale"
           type="range"
-          min="0.3"
-          max="1.2"
-          step="0.01"
+          min="3"
+          max="15"
+          step="0.05"
           value="${config.scale}"
           style="width:100%;"
         >
