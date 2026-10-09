@@ -46,18 +46,49 @@ async function main() {
       baseOptions: {
         modelAssetPath: "/face_landmarker.task",
       },
-      runningMode: "IMAGE",
+      runningMode: "VIDEO",
       numFaces: 1,
       outputFacialTransformationMatrixes: true,
     }
   );
   
-  textureLoader.load("/axel-selfie-2.jpeg", (texture) => {
+  const video = document.createElement("video");
+
+  video.autoplay = true;
+  video.playsInline = true;
+  video.muted = true;
+  
+  video.style.position = "fixed";
+  video.style.width = "1px";
+  video.style.height = "1px";
+  video.style.opacity = "0";
+  video.style.pointerEvents = "none";
+  
+  document.body.appendChild(video);
+  
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: {
+      facingMode: "user",
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
+    },
+    audio: false,
+  });
+  
+  video.srcObject = stream;
+  await video.play();
+  
+  const texture = new THREE.VideoTexture(video);
+  
+  {
     const image = texture.image;
 
     let faceRotation = new THREE.Euler(0, 0, 0, "YXZ");
   
-    const result = faceLandmarker.detect(image);
+    const result = faceLandmarker.detectForVideo(
+      video,
+      performance.now()
+    );
   
     console.log("Face Landmarker result:", result);
 
@@ -117,8 +148,8 @@ async function main() {
     
     
     const landmarks = result.faceLandmarks[0];
-    const imageWidth = texture.image.width;
-    const imageHeight = texture.image.height;
+    const imageWidth = video.videoWidth;
+    const imageHeight = video.videoHeight;
   
     const aspectRatio = imageWidth / imageHeight;
   
@@ -287,9 +318,18 @@ async function main() {
     }
     
       const model = gltf.scene;
-    
+
       const box = new THREE.Box3().setFromObject(model);
+      const size = box.getSize(new THREE.Vector3());
       const center = box.getCenter(new THREE.Vector3());
+      
+      console.log("Producto:", product.name);
+      console.log("Dimensiones originales:", {
+        x: size.x,
+        y: size.y,
+        z: size.z,
+      });
+      console.log("Centro original:", center);
     
       model.position.sub(center);
     
@@ -319,6 +359,10 @@ async function main() {
       glassesModel = model;
       glasses.add(glassesModel);
     
+      scaleInput.min = Math.min(3, config.scale);
+      scaleInput.max = Math.max(15, config.scale * 1.5);
+      scaleInput.step = config.scale >= 100 ? 1 : 0.05;
+      
       scaleInput.value = config.scale;
       xInput.value = config.offsetX;
       yInput.value = config.offsetY;
@@ -633,6 +677,11 @@ async function main() {
 
     
   saveCalibrationButton.addEventListener("click", () => {
+    config.scale = Number(scaleInput.value);
+    config.offsetX = Number(xInput.value);
+    config.offsetY = Number(yInput.value);
+    config.offsetZ = Number(zInput.value);
+  
     const productConfig = {
       id: currentProduct.id,
       name: currentProduct.name,
@@ -699,13 +748,111 @@ async function main() {
 
     loadProduct(defaultProductId);
   
-    function animate() {
-      requestAnimationFrame(animate);
+    
+  function animate() {
+    requestAnimationFrame(animate);
   
-      renderer.render(scene, camera);
+    const frameResult = faceLandmarker.detectForVideo(
+      video,
+      performance.now()
+    );
+  
+    if (frameResult.faceLandmarks.length > 0) {
+      const landmarks = frameResult.faceLandmarks[0];
+  
+      // Actualizar la rotación de la cabeza.
+      if (frameResult.facialTransformationMatrixes?.length > 0) {
+        const facialMatrix =
+          frameResult.facialTransformationMatrixes[0];
+  
+        const rotationMatrix = new THREE.Matrix4().fromArray(
+          facialMatrix.data
+        );
+  
+        faceRotation.setFromRotationMatrix(
+          rotationMatrix,
+          "YXZ"
+        );
+      }
+  
+      // Actualizar los puntos rojos.
+      landmarkContext.clearRect(
+        0,
+        0,
+        landmarkCanvas.width,
+        landmarkCanvas.height
+      );
+  
+      landmarkContext.fillStyle = "red";
+  
+      for (const index of pointsToDraw) {
+        const point = landmarks[index];
+  
+        const x = point.x * imageWidth;
+        const y = point.y * imageHeight;
+  
+        landmarkContext.beginPath();
+        landmarkContext.arc(x, y, 8, 0, Math.PI * 2);
+        landmarkContext.fill();
+      }
+  
+      landmarkTexture.needsUpdate = true;
+  
+      // Calcular la posición de los ojos en la escena.
+      const leftEye = landmarks[33];
+      const rightEye = landmarks[263];
+  
+      const leftEyeX =
+        leftEye.x * planeWidth - planeWidth / 2;
+      const leftEyeY =
+        planeHeight / 2 - leftEye.y * planeHeight;
+  
+      const rightEyeX =
+        rightEye.x * planeWidth - planeWidth / 2;
+      const rightEyeY =
+        planeHeight / 2 - rightEye.y * planeHeight;
+  
+      const eyeCenterX = (leftEyeX + rightEyeX) / 2;
+      const eyeCenterY = (leftEyeY + rightEyeY) / 2;
+  
+      const eyeDistance = Math.hypot(
+        rightEyeX - leftEyeX,
+        rightEyeY - leftEyeY
+      );
+  
+      const eyeAngle = Math.atan2(
+        rightEyeY - leftEyeY,
+        rightEyeX - leftEyeX
+      );
+  
+      const referenceEyeDistance = 76;
+      const faceScale = eyeDistance / referenceEyeDistance;
+  
+      // Aplicar posición, rotación y escala a los anteojos.
+      glasses.position.set(
+        eyeCenterX,
+        eyeCenterY,
+        10
+      );
+  
+      glasses.rotation.set(
+        faceRotation.x,
+        faceRotation.y,
+        eyeAngle + faceRotation.z,
+        "YXZ"
+      );
+  
+      glasses.scale.setScalar(faceScale);
     }
   
-    animate();
-  });
+    renderer.render(scene, camera);
+  }
+  
+  animate();
+ }
 }
-main();
+
+
+main().catch((error) => {
+  console.error("Error al iniciar el probador virtual:", error);
+});

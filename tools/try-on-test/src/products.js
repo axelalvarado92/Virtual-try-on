@@ -19,9 +19,9 @@ z: 0,
 "glasses-002": {
 id: "glasses-002",
 name: "Modelo de prueba 002",
-modelUrl: "/glasses.glb",
+modelUrl: "/glasses-2.glb",
 calibration: {
-scale: 10.0,
+scale: 1000.0,
 offsetX: 0,
 offsetY: -46,
 offsetZ: 0,
