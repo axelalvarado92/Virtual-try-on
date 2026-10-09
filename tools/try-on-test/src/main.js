@@ -323,6 +323,21 @@ async function main() {
       xInput.value = config.offsetX;
       yInput.value = config.offsetY;
       zInput.value = config.offsetZ;
+
+      
+      rotationXInput.value = THREE.MathUtils.radToDeg(
+        product.modelRotation.x
+      );
+      rotationYInput.value = THREE.MathUtils.radToDeg(
+        product.modelRotation.y
+      );
+      rotationZInput.value = THREE.MathUtils.radToDeg(
+        product.modelRotation.z
+      );
+      
+      rotationXValue.textContent = `${rotationXInput.value}°`;
+      rotationYValue.textContent = `${rotationYInput.value}°`;
+      rotationZValue.textContent = `${rotationZInput.value}°`;
     
       scaleValue.textContent = config.scale.toFixed(2);
       xValue.textContent = config.offsetX;
@@ -346,17 +361,22 @@ async function main() {
     
     const panel = document.createElement("div");
 
-    panel.style.position = "fixed";
-    panel.style.top = "20px";
-    panel.style.left = "20px";
-    panel.style.zIndex = "1000";
-    panel.style.padding = "12px";
-    panel.style.background = "rgba(0, 0, 0, 0.75)";
+    
+    panel.style.padding = "8px";
+    panel.style.background = "rgba(0, 0, 0, 0.85)";
     panel.style.color = "white";
     panel.style.fontFamily = "Arial, sans-serif";
-    panel.style.fontSize = "14px";
+    panel.style.fontSize = "12px";
     panel.style.borderRadius = "8px";
-    panel.style.width = "220px";
+    panel.style.width = "200px";
+    panel.style.maxHeight = "calc(100vh - 40px)";
+    panel.style.overflowY = "auto";
+    panel.style.boxSizing = "border-box";
+    
+    panel.style.position = "fixed";
+    panel.style.top = "10px";
+    panel.style.left = "10px";
+    panel.style.zIndex = "9999";
     
     panel.innerHTML = `
       <div style="margin-bottom:8px;font-weight:bold;">
@@ -444,6 +464,66 @@ async function main() {
       </label>
     
       <div id="z-value">0</div>
+
+      <br>
+      <div style="margin-bottom:8px;font-weight:bold;">
+        Rotación del modelo
+      </div>
+      
+      <label>
+        Rotación X (grados)
+        <input
+          id="rotation-x"
+          type="range"
+          min="-180"
+          max="180"
+          step="1"
+          value="0"
+          style="width:100%;"
+        >
+      </label>
+      <div id="rotation-x-value">0°</div>
+      
+      <br>
+      
+      <label>
+        Rotación Y (grados)
+        <input
+          id="rotation-y"
+          type="range"
+          min="-180"
+          max="180"
+          step="1"
+          value="-90"
+          style="width:100%;"
+        >
+      </label>
+      <div id="rotation-y-value">-90°</div>
+      
+      <br>
+      
+      <label>
+        Rotación Z (grados)
+        <input
+          id="rotation-z"
+          type="range"
+          min="-180"
+          max="180"
+          step="1"
+          value="0"
+          style="width:100%;"
+        >
+      </label>
+      <div id="rotation-z-value">0°</div>
+      
+      <br>
+      
+      <button
+        id="save-calibration"
+        style="width:100%;padding:9px;cursor:pointer;font-weight:bold;"
+      >
+        Guardar calibración
+      </button>
     `;
     
     document.body.appendChild(panel);
@@ -478,6 +558,37 @@ async function main() {
     
     const zValue =
       document.getElementById("z-value");
+    
+    const saveCalibrationButton =
+      document.getElementById("save-calibration");
+
+    const rotationXInput = document.getElementById("rotation-x");
+    const rotationYInput = document.getElementById("rotation-y");
+    const rotationZInput = document.getElementById("rotation-z");
+    
+    const rotationXValue = document.getElementById("rotation-x-value");
+    const rotationYValue = document.getElementById("rotation-y-value");
+    const rotationZValue = document.getElementById("rotation-z-value");
+    
+    function updateModelRotation() {
+      const x = THREE.MathUtils.degToRad(Number(rotationXInput.value));
+      const y = THREE.MathUtils.degToRad(Number(rotationYInput.value));
+      const z = THREE.MathUtils.degToRad(Number(rotationZInput.value));
+    
+      currentProduct.modelRotation.x = x;
+      currentProduct.modelRotation.y = y;
+      currentProduct.modelRotation.z = z;
+    
+      glassesModel.rotation.set(x, y, z);
+    
+      rotationXValue.textContent = `${rotationXInput.value}°`;
+      rotationYValue.textContent = `${rotationYInput.value}°`;
+      rotationZValue.textContent = `${rotationZInput.value}°`;
+    }
+    
+    rotationXInput.addEventListener("input", updateModelRotation);
+    rotationYInput.addEventListener("input", updateModelRotation);
+    rotationZInput.addEventListener("input", updateModelRotation);
     
     scaleInput.addEventListener("input", () => {
       config.scale = Number(scaleInput.value);
@@ -519,6 +630,72 @@ async function main() {
       zValue.textContent =
         config.offsetZ;
     });
+
+    
+  saveCalibrationButton.addEventListener("click", () => {
+    const productConfig = {
+      id: currentProduct.id,
+      name: currentProduct.name,
+      modelUrl: currentProduct.modelUrl,
+      calibration: {
+        scale: config.scale,
+        offsetX: config.offsetX,
+        offsetY: config.offsetY,
+        offsetZ: config.offsetZ,
+      },
+      modelRotation: {
+        x: currentProduct.modelRotation.x,
+        y: currentProduct.modelRotation.y,
+        z: currentProduct.modelRotation.z,
+      },
+    };
+  
+    const formatRotation = (value) => {
+      if (Math.abs(value + Math.PI / 2) < 0.000001) {
+        return "-Math.PI / 2";
+      }
+  
+      if (Math.abs(value - Math.PI / 2) < 0.000001) {
+        return "Math.PI / 2";
+      }
+  
+      return Number(value.toFixed(6)).toString();
+    };
+  
+    const output = `"${productConfig.id}": {
+    id: "${productConfig.id}",
+    name: ${JSON.stringify(productConfig.name)},
+    modelUrl: ${JSON.stringify(productConfig.modelUrl)},
+    calibration: {
+      scale: ${productConfig.calibration.scale},
+      offsetX: ${productConfig.calibration.offsetX},
+      offsetY: ${productConfig.calibration.offsetY},
+      offsetZ: ${productConfig.calibration.offsetZ},
+    },
+    modelRotation: {
+      x: ${formatRotation(productConfig.modelRotation.x)},
+      y: ${formatRotation(productConfig.modelRotation.y)},
+      z: ${formatRotation(productConfig.modelRotation.z)},
+    },
+  },`;
+  
+    console.log("=== CALIBRACIÓN PARA products.js ===");
+    console.log(output);
+    console.log("=== FIN DE LA CALIBRACIÓN ===");
+  
+    navigator.clipboard.writeText(output)
+      .then(() => {
+        saveCalibrationButton.textContent = "¡Copiado!";
+        setTimeout(() => {
+          saveCalibrationButton.textContent = "Guardar calibración";
+        }, 2000);
+      })
+      .catch(() => {
+        console.warn(
+          "No se pudo copiar automáticamente. Copiá el bloque desde la consola."
+        );
+      });
+  });
 
     loadProduct(defaultProductId);
   
