@@ -1,18 +1,61 @@
 import * as THREE from "three";
-import {
-  FaceLandmarker,
-  FilesetResolver,
-} from "@mediapipe/tasks-vision";
+import { FaceLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { products, defaultProductId } from "./products.js";
 
-async function main() {
+/* -------------------------------------------------------------------------- */
+/* Constantes                                                                 */
+/* -------------------------------------------------------------------------- */
 
-  const scene = new THREE.Scene();
-  
+const MEDIAPIPE_WASM_URL =
+  "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.1.0/wasm";
+const FACE_MODEL_PATH = "/face_landmarker.task";
+
+const LANDMARKS = {
+  LEFT_EYE: 33,
+  RIGHT_EYE: 263,
+};
+
+// Puntos rojos de depuración dibujados sobre el video.
+const DEBUG_POINTS = [
+  33, // ojo izquierdo
+  263, // ojo derecho
+  1, // nariz
+  61, // boca
+  291, // boca
+];
+
+// Valores iniciales de prueba; se calibran con la cámara real.
+const EYE_DISTANCE_RANGE = { min: 130, max: 190 }; // en píxeles del video
+const FACE_CENTER_X_RANGE = { min: 0.375, max: 0.625 }; // normalizado 0..1
+const REFERENCE_EYE_DISTANCE = 76; // en unidades de escena
+
+const SELFIE_HEIGHT_RATIO = 0.9;
+const Z_LAYERS = { selfie: 0, landmarks: 2, glasses: 10 };
+
+// Definición de los sliders del panel de calibración.
+const SLIDERS = {
+  scale: { label: "Escala", min: 3, max: 15, step: 0.05, format: (v) => Number(v).toFixed(2) },
+  offsetX: { label: "X", min: -100, max: 100, step: 1, format: (v) => String(v) },
+  offsetY: { label: "Y", min: -100, max: 100, step: 1, format: (v) => String(v) },
+  offsetZ: { label: "Z", min: -100, max: 100, step: 1, format: (v) => String(v) },
+  rotationX: { label: "Rotación X (grados)", min: -180, max: 180, step: 1, format: (v) => `${v}°` },
+  rotationY: { label: "Rotación Y (grados)", min: -180, max: 180, step: 1, format: (v) => `${v}°` },
+  rotationZ: { label: "Rotación Z (grados)", min: -180, max: 180, step: 1, format: (v) => `${v}°` },
+};
+const CALIBRATION_KEYS = ["scale", "offsetX", "offsetY", "offsetZ"];
+const ROTATION_KEYS = ["rotationX", "rotationY", "rotationZ"];
+
+/* -------------------------------------------------------------------------- */
+/* Escena                                                                     */
+/* -------------------------------------------------------------------------- */
+
+function createScene() {
   const width = window.innerWidth;
   const height = window.innerHeight;
-  
+
+  const scene = new THREE.Scene();
+
   const camera = new THREE.OrthographicCamera(
     -width / 2,
     width / 2,
@@ -21,52 +64,77 @@ async function main() {
     0.1,
     1000
   );
-  
   camera.position.z = 100;
-  
-  const renderer = new THREE.WebGLRenderer({
-    antialias: true,
-    alpha: true,
-  });
-  
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   renderer.setSize(width, height);
   renderer.setClearColor(0x000000, 0);
-
   document.body.appendChild(renderer.domElement);
-  
-  const textureLoader = new THREE.TextureLoader();
-  
-  const vision = await FilesetResolver.forVisionTasks(
-    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.1.0/wasm"
-  );
-  
-  const faceLandmarker = await FaceLandmarker.createFromOptions(
-    vision,
-    {
-      baseOptions: {
-        modelAssetPath: "/face_landmarker.task",
-      },
-      runningMode: "VIDEO",
-      numFaces: 1,
-      outputFacialTransformationMatrixes: true,
-    }
-  );
-  
-  const video = document.createElement("video");
 
+  const light = new THREE.DirectionalLight(0xffffff, 2);
+  light.position.set(0, 0, 100);
+  scene.add(light);
+
+  return { scene, camera, renderer, height };
+}
+
+function createDistanceGuide() {
+  const element = document.createElement("div");
+
+  Object.assign(element.style, {
+    position: "fixed",
+    top: "20px",
+    left: "50%",
+    transform: "translateX(-50%)",
+    padding: "12px 18px",
+    borderRadius: "8px",
+    background: "rgba(0, 0, 0, 0.75)",
+    color: "white",
+    fontFamily: "Arial, sans-serif",
+    fontSize: "16px",
+    textAlign: "center",
+    zIndex: "1000",
+    width: "max-content",
+    maxWidth: "85vw",
+  });
+
+  element.textContent = "Buscando rostro...";
+  document.body.appendChild(element);
+
+  return element;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Cámara y detección facial                                                  */
+/* -------------------------------------------------------------------------- */
+
+async function createFaceLandmarker() {
+  const vision = await FilesetResolver.forVisionTasks(MEDIAPIPE_WASM_URL);
+
+  return FaceLandmarker.createFromOptions(vision, {
+    baseOptions: { modelAssetPath: FACE_MODEL_PATH },
+    runningMode: "VIDEO",
+    numFaces: 1,
+    outputFacialTransformationMatrixes: true,
+  });
+}
+
+async function startCamera() {
+  const video = document.createElement("video");
   video.autoplay = true;
   video.playsInline = true;
   video.muted = true;
-  
-  video.style.position = "fixed";
-  video.style.width = "1px";
-  video.style.height = "1px";
-  video.style.opacity = "0";
-  video.style.pointerEvents = "none";
-  
+
+  Object.assign(video.style, {
+    position: "fixed",
+    width: "1px",
+    height: "1px",
+    opacity: "0",
+    pointerEvents: "none",
+  });
   document.body.appendChild(video);
-  
-  const stream = await navigator.mediaDevices.getUserMedia({
+
+  video.srcObject = await navigator.mediaDevices.getUserMedia({
     video: {
       facingMode: "user",
       width: { ideal: 1280 },
@@ -74,784 +142,499 @@ async function main() {
     },
     audio: false,
   });
-  
-  video.srcObject = stream;
   await video.play();
-  
-  const texture = new THREE.VideoTexture(video);
-  
-  {
-    const image = texture.image;
 
-    let faceRotation = new THREE.Euler(0, 0, 0, "YXZ");
-  
-    const result = faceLandmarker.detectForVideo(
-      video,
-      performance.now()
-    );
-  
-    console.log("Face Landmarker result:", result);
-
-    console.log(
-      "Faces detected:",
-      result.faceLandmarks.length
-    );
-    
-    if (result.faceLandmarks.length > 0) {
-      console.log(
-        "Landmarks:",
-        result.faceLandmarks[0].length
-      );
-
-      console.log(
-        "Facial transformation:",
-        result.facialTransformationMatrixes
-      );
-
-      const facialMatrix =
-        result.facialTransformationMatrixes[0];
-      
-      console.log(
-        "Matrix data:",
-        facialMatrix.data
-      );
-
-      const matrix = facialMatrix.data;
-
-      console.table([
-        [matrix[0], matrix[1], matrix[2], matrix[3]],
-        [matrix[4], matrix[5], matrix[6], matrix[7]],
-        [matrix[8], matrix[9], matrix[10], matrix[11]],
-        [matrix[12], matrix[13], matrix[14], matrix[15]],
-      ]);
-
-      const rotationMatrix = new THREE.Matrix4().fromArray(matrix);
-
-      faceRotation.setFromRotationMatrix(
-        rotationMatrix,
-        "YXZ"
-      );
-      
-      console.log("Rotación facial (radianes):", {
-        x: faceRotation.x,
-        y: faceRotation.y,
-        z: faceRotation.z,
-      });
-      
-      console.log("Rotación facial (grados):", {
-        x: THREE.MathUtils.radToDeg(faceRotation.x),
-        y: THREE.MathUtils.radToDeg(faceRotation.y),
-        z: THREE.MathUtils.radToDeg(faceRotation.z),
-      });
-    }
-
-    
-    
-    const landmarks = result.faceLandmarks[0];
-    const imageWidth = video.videoWidth;
-    const imageHeight = video.videoHeight;
-  
-    const aspectRatio = imageWidth / imageHeight;
-  
-    const planeHeight = height * 0.9;
-    const planeWidth = planeHeight * aspectRatio;
-  
-    const geometry = new THREE.PlaneGeometry(
-      planeWidth,
-      planeHeight
-    );
-  
-    const material = new THREE.MeshBasicMaterial({
-      map: texture,
-      depthWrite: false,
-    });
-  
-    const selfie = new THREE.Mesh(
-      geometry,
-      material
-    );
-  
-    selfie.position.z = 0;
-    selfie.renderOrder = 0;
-  
-    scene.add(selfie);
-
-    const landmarkCanvas = document.createElement("canvas");
-
-    landmarkCanvas.width = imageWidth;
-    landmarkCanvas.height = imageHeight;
-    
-    const landmarkContext = landmarkCanvas.getContext("2d");
-    
-    landmarkContext.fillStyle = "red";
-    
-    const pointsToDraw = [
-      33,   // ojo izquierdo
-      263,  // ojo derecho
-      1,    // nariz
-      61,   // boca
-      291   // boca
-    ];
-    
-    for (const index of pointsToDraw) {
-      const point = landmarks[index];
-    
-      const x = point.x * imageWidth;
-      const y = point.y * imageHeight;
-    
-      landmarkContext.beginPath();
-      landmarkContext.arc(x, y, 8, 0, Math.PI * 2);
-      landmarkContext.fill();
-    }
-
-    const landmarkTexture = new THREE.CanvasTexture(
-      landmarkCanvas
-    );
-    
-    const landmarkMaterial = new THREE.MeshBasicMaterial({
-      map: landmarkTexture,
-      transparent: true,
-      depthWrite: false,
-    });
-    
-    const landmarkGeometry = new THREE.PlaneGeometry(
-      planeWidth,
-      planeHeight
-    );
-    
-    const landmarkLayer = new THREE.Mesh(
-      landmarkGeometry,
-      landmarkMaterial
-    );
-    
-    landmarkLayer.position.z = 2;
-    landmarkLayer.renderOrder = 1;
-    
-    scene.add(landmarkLayer);
-
-    const light = new THREE.DirectionalLight(0xffffff, 2);
-    light.position.set(0, 0, 100);
-
-    scene.add(light);
-  
-    
-    const glasses = new THREE.Group();
-    
-    let glassesModel = new THREE.Group();
-    glasses.add(glassesModel);
-
-    let currentProduct = products[defaultProductId];
-    let selectedProductId = defaultProductId;
-
-    const config = {
-      scale: currentProduct.calibration.scale,
-      offsetX: currentProduct.calibration.offsetX,
-      offsetY: currentProduct.calibration.offsetY,
-      offsetZ: currentProduct.calibration.offsetZ,
-    };
-    
-    // Aplicar transformación facial usando landmarks
-    const leftEye = landmarks[33];
-    const rightEye = landmarks[263];
-    
-    const leftEyeX = leftEye.x * planeWidth - planeWidth / 2;
-    const leftEyeY = planeHeight / 2 - leftEye.y * planeHeight;
-    
-    const rightEyeX = rightEye.x * planeWidth - planeWidth / 2;
-    const rightEyeY = planeHeight / 2 - rightEye.y * planeHeight;
-    
-    const eyeCenterX = (leftEyeX + rightEyeX) / 2;
-    const eyeCenterY = (leftEyeY + rightEyeY) / 2;
-    
-    const eyeDistance = Math.hypot(
-      rightEyeX - leftEyeX,
-      rightEyeY - leftEyeY
-    );
-    
-    const eyeAngle = Math.atan2(
-      rightEyeY - leftEyeY,
-      rightEyeX - leftEyeX
-    );
-    
-    const referenceEyeDistance = 76;
-    
-    const faceScale = eyeDistance / referenceEyeDistance;
-    
-    glasses.position.set(
-      eyeCenterX,
-      eyeCenterY,
-      10
-    );
-    
-    glasses.rotation.set(
-      faceRotation.x,
-      faceRotation.y,
-      eyeAngle + faceRotation.z,
-      "YXZ"
-    );
-    
-    glasses.scale.setScalar(faceScale);
-    
-    glasses.renderOrder = 2;
-    
-    scene.add(glasses);
-
-    const gltfLoader = new GLTFLoader();
-
-    let productLoadVersion = 0;
-    
-    function loadProduct(productId) {
-    const product = products[productId];
-    
-    if (!product) {
-    console.error("Producto inexistente:", productId);
-    return;
-    }
-    
-    const loadVersion = ++productLoadVersion;
-    
-    gltfLoader.load(
-    product.modelUrl,
-    (gltf) => {
-    if (loadVersion !== productLoadVersion) {
-    return;
-    }
-    
-      const model = gltf.scene;
-
-      const box = new THREE.Box3().setFromObject(model);
-      const size = box.getSize(new THREE.Vector3());
-      const center = box.getCenter(new THREE.Vector3());
-      
-      console.log("Producto:", product.name);
-      console.log("Dimensiones originales:", {
-        x: size.x,
-        y: size.y,
-        z: size.z,
-      });
-      console.log("Centro original:", center);
-    
-      model.position.sub(center);
-    
-      model.rotation.set(
-        product.modelRotation.x,
-        product.modelRotation.y,
-        product.modelRotation.z
-      );
-    
-      currentProduct = product;
-      selectedProductId = productId;
-    
-      config.scale = product.calibration.scale;
-      config.offsetX = product.calibration.offsetX;
-      config.offsetY = product.calibration.offsetY;
-      config.offsetZ = product.calibration.offsetZ;
-    
-      model.scale.setScalar(config.scale);
-    
-      model.position.set(
-        config.offsetX,
-        config.offsetY,
-        config.offsetZ
-      );
-    
-      glasses.remove(glassesModel);
-      glassesModel = model;
-      glasses.add(glassesModel);
-    
-      scaleInput.min = Math.min(3, config.scale);
-      scaleInput.max = Math.max(15, config.scale * 1.5);
-      scaleInput.step = config.scale >= 100 ? 1 : 0.05;
-      
-      scaleInput.value = config.scale;
-      xInput.value = config.offsetX;
-      yInput.value = config.offsetY;
-      zInput.value = config.offsetZ;
-
-      
-      rotationXInput.value = THREE.MathUtils.radToDeg(
-        product.modelRotation.x
-      );
-      rotationYInput.value = THREE.MathUtils.radToDeg(
-        product.modelRotation.y
-      );
-      rotationZInput.value = THREE.MathUtils.radToDeg(
-        product.modelRotation.z
-      );
-      
-      rotationXValue.textContent = `${rotationXInput.value}°`;
-      rotationYValue.textContent = `${rotationYInput.value}°`;
-      rotationZValue.textContent = `${rotationZInput.value}°`;
-    
-      scaleValue.textContent = config.scale.toFixed(2);
-      xValue.textContent = config.offsetX;
-      yValue.textContent = config.offsetY;
-      zValue.textContent = config.offsetZ;
-    
-      console.log("Producto cargado:", currentProduct.name);
-    },
-    undefined,
-    (error) => {
-      console.error(
-        "Error al cargar el producto:",
-        product.modelUrl,
-        error
-      );
-    }
-    
-    );
-  }
-
-    
-    const panel = document.createElement("div");
-
-    
-    panel.style.padding = "8px";
-    panel.style.background = "rgba(0, 0, 0, 0.85)";
-    panel.style.color = "white";
-    panel.style.fontFamily = "Arial, sans-serif";
-    panel.style.fontSize = "12px";
-    panel.style.borderRadius = "8px";
-    panel.style.width = "200px";
-    panel.style.maxHeight = "calc(100vh - 40px)";
-    panel.style.overflowY = "auto";
-    panel.style.boxSizing = "border-box";
-    
-    panel.style.position = "fixed";
-    panel.style.top = "10px";
-    panel.style.left = "10px";
-    panel.style.zIndex = "9999";
-    
-    panel.innerHTML = `
-      <div style="margin-bottom:8px;font-weight:bold;">
-        Probador virtual
-      </div>
-      
-      <label>
-        Modelo
-        <select id="product-selector" style="width:100%;margin-top:4px;">
-          ${Object.values(products).map(product =>
-            `<option value="${product.id}" ${
-              product.id === defaultProductId ? "selected" : ""
-            }>${product.name}</option>`
-          ).join("")}
-        </select>
-      </label>
-      
-      <div style="margin-top:12px;margin-bottom:8px;font-weight:bold;">
-        Calibración de gafas
-      </div>
-
-    
-      <label>
-        Escala
-        <input
-          id="glasses-scale"
-          type="range"
-          min="3"
-          max="15"
-          step="0.05"
-          value="${config.scale}"
-          style="width:100%;"
-        >
-      </label>
-    
-      <div id="scale-value">${config.scale}</div>
-    
-      <br>
-    
-      <label>
-        X
-        <input
-          id="glasses-x"
-          type="range"
-          min="-100"
-          max="100"
-          step="1"
-          value="0"
-          style="width:100%;"
-        >
-      </label>
-    
-      <div id="x-value">0</div>
-    
-      <br>
-    
-      <label>
-        Y
-        <input
-          id="glasses-y"
-          type="range"
-          min="-100"
-          max="100"
-          step="1"
-          value="0"
-          style="width:100%;"
-        >
-      </label>
-    
-      <div id="y-value">0</div>
-    
-      <br>
-    
-      <label>
-        Z
-        <input
-          id="glasses-z"
-          type="range"
-          min="-100"
-          max="100"
-          step="1"
-          value="0"
-          style="width:100%;"
-        >
-      </label>
-    
-      <div id="z-value">0</div>
-
-      <br>
-      <div style="margin-bottom:8px;font-weight:bold;">
-        Rotación del modelo
-      </div>
-      
-      <label>
-        Rotación X (grados)
-        <input
-          id="rotation-x"
-          type="range"
-          min="-180"
-          max="180"
-          step="1"
-          value="0"
-          style="width:100%;"
-        >
-      </label>
-      <div id="rotation-x-value">0°</div>
-      
-      <br>
-      
-      <label>
-        Rotación Y (grados)
-        <input
-          id="rotation-y"
-          type="range"
-          min="-180"
-          max="180"
-          step="1"
-          value="-90"
-          style="width:100%;"
-        >
-      </label>
-      <div id="rotation-y-value">-90°</div>
-      
-      <br>
-      
-      <label>
-        Rotación Z (grados)
-        <input
-          id="rotation-z"
-          type="range"
-          min="-180"
-          max="180"
-          step="1"
-          value="0"
-          style="width:100%;"
-        >
-      </label>
-      <div id="rotation-z-value">0°</div>
-      
-      <br>
-      
-      <button
-        id="save-calibration"
-        style="width:100%;padding:9px;cursor:pointer;font-weight:bold;"
-      >
-        Guardar calibración
-      </button>
-    `;
-    
-    document.body.appendChild(panel);
-
-    const productSelector =
-      document.getElementById("product-selector");
-    
-    productSelector.addEventListener("change", () => {
-      loadProduct(productSelector.value);
-    });
-
-    const scaleInput =
-      document.getElementById("glasses-scale");
-    
-    const xInput =
-      document.getElementById("glasses-x");
-    
-    const yInput =
-      document.getElementById("glasses-y");
-    
-    const zInput =
-      document.getElementById("glasses-z");
-    
-    const scaleValue =
-      document.getElementById("scale-value");
-    
-    const xValue =
-      document.getElementById("x-value");
-    
-    const yValue =
-      document.getElementById("y-value");
-    
-    const zValue =
-      document.getElementById("z-value");
-    
-    const saveCalibrationButton =
-      document.getElementById("save-calibration");
-
-    const rotationXInput = document.getElementById("rotation-x");
-    const rotationYInput = document.getElementById("rotation-y");
-    const rotationZInput = document.getElementById("rotation-z");
-    
-    const rotationXValue = document.getElementById("rotation-x-value");
-    const rotationYValue = document.getElementById("rotation-y-value");
-    const rotationZValue = document.getElementById("rotation-z-value");
-    
-    function updateModelRotation() {
-      const x = THREE.MathUtils.degToRad(Number(rotationXInput.value));
-      const y = THREE.MathUtils.degToRad(Number(rotationYInput.value));
-      const z = THREE.MathUtils.degToRad(Number(rotationZInput.value));
-    
-      currentProduct.modelRotation.x = x;
-      currentProduct.modelRotation.y = y;
-      currentProduct.modelRotation.z = z;
-    
-      glassesModel.rotation.set(x, y, z);
-    
-      rotationXValue.textContent = `${rotationXInput.value}°`;
-      rotationYValue.textContent = `${rotationYInput.value}°`;
-      rotationZValue.textContent = `${rotationZInput.value}°`;
-    }
-    
-    rotationXInput.addEventListener("input", updateModelRotation);
-    rotationYInput.addEventListener("input", updateModelRotation);
-    rotationZInput.addEventListener("input", updateModelRotation);
-    
-    scaleInput.addEventListener("input", () => {
-      config.scale = Number(scaleInput.value);
-    
-      glassesModel.scale.setScalar(
-        config.scale
-      );
-    
-      scaleValue.textContent =
-        config.scale.toFixed(2);
-    });
-    
-    xInput.addEventListener("input", () => {
-      config.offsetX = Number(xInput.value);
-    
-      glassesModel.position.x =
-        config.offsetX;
-    
-      xValue.textContent =
-        config.offsetX;
-    });
-    
-    yInput.addEventListener("input", () => {
-      config.offsetY = Number(yInput.value);
-    
-      glassesModel.position.y =
-        config.offsetY;
-    
-      yValue.textContent =
-        config.offsetY;
-    });
-    
-    zInput.addEventListener("input", () => {
-      config.offsetZ = Number(zInput.value);
-    
-      glassesModel.position.z =
-        config.offsetZ;
-    
-      zValue.textContent =
-        config.offsetZ;
-    });
-
-    
-  saveCalibrationButton.addEventListener("click", () => {
-    config.scale = Number(scaleInput.value);
-    config.offsetX = Number(xInput.value);
-    config.offsetY = Number(yInput.value);
-    config.offsetZ = Number(zInput.value);
-  
-    const productConfig = {
-      id: currentProduct.id,
-      name: currentProduct.name,
-      modelUrl: currentProduct.modelUrl,
-      calibration: {
-        scale: config.scale,
-        offsetX: config.offsetX,
-        offsetY: config.offsetY,
-        offsetZ: config.offsetZ,
-      },
-      modelRotation: {
-        x: currentProduct.modelRotation.x,
-        y: currentProduct.modelRotation.y,
-        z: currentProduct.modelRotation.z,
-      },
-    };
-  
-    const formatRotation = (value) => {
-      if (Math.abs(value + Math.PI / 2) < 0.000001) {
-        return "-Math.PI / 2";
-      }
-  
-      if (Math.abs(value - Math.PI / 2) < 0.000001) {
-        return "Math.PI / 2";
-      }
-  
-      return Number(value.toFixed(6)).toString();
-    };
-  
-    const output = `"${productConfig.id}": {
-    id: "${productConfig.id}",
-    name: ${JSON.stringify(productConfig.name)},
-    modelUrl: ${JSON.stringify(productConfig.modelUrl)},
-    calibration: {
-      scale: ${productConfig.calibration.scale},
-      offsetX: ${productConfig.calibration.offsetX},
-      offsetY: ${productConfig.calibration.offsetY},
-      offsetZ: ${productConfig.calibration.offsetZ},
-    },
-    modelRotation: {
-      x: ${formatRotation(productConfig.modelRotation.x)},
-      y: ${formatRotation(productConfig.modelRotation.y)},
-      z: ${formatRotation(productConfig.modelRotation.z)},
-    },
-  },`;
-  
-    console.log("=== CALIBRACIÓN PARA products.js ===");
-    console.log(output);
-    console.log("=== FIN DE LA CALIBRACIÓN ===");
-  
-    navigator.clipboard.writeText(output)
-      .then(() => {
-        saveCalibrationButton.textContent = "¡Copiado!";
-        setTimeout(() => {
-          saveCalibrationButton.textContent = "Guardar calibración";
-        }, 2000);
-      })
-      .catch(() => {
-        console.warn(
-          "No se pudo copiar automáticamente. Copiá el bloque desde la consola."
-        );
-      });
-  });
-
-    loadProduct(defaultProductId);
-  
-    
-  function animate() {
-    requestAnimationFrame(animate);
-  
-    const frameResult = faceLandmarker.detectForVideo(
-      video,
-      performance.now()
-    );
-  
-    if (frameResult.faceLandmarks.length > 0) {
-      const landmarks = frameResult.faceLandmarks[0];
-  
-      // Actualizar la rotación de la cabeza.
-      if (frameResult.facialTransformationMatrixes?.length > 0) {
-        const facialMatrix =
-          frameResult.facialTransformationMatrixes[0];
-  
-        const rotationMatrix = new THREE.Matrix4().fromArray(
-          facialMatrix.data
-        );
-  
-        faceRotation.setFromRotationMatrix(
-          rotationMatrix,
-          "YXZ"
-        );
-      }
-  
-      // Actualizar los puntos rojos.
-      landmarkContext.clearRect(
-        0,
-        0,
-        landmarkCanvas.width,
-        landmarkCanvas.height
-      );
-  
-      landmarkContext.fillStyle = "red";
-  
-      for (const index of pointsToDraw) {
-        const point = landmarks[index];
-  
-        const x = point.x * imageWidth;
-        const y = point.y * imageHeight;
-  
-        landmarkContext.beginPath();
-        landmarkContext.arc(x, y, 8, 0, Math.PI * 2);
-        landmarkContext.fill();
-      }
-  
-      landmarkTexture.needsUpdate = true;
-  
-      // Calcular la posición de los ojos en la escena.
-      const leftEye = landmarks[33];
-      const rightEye = landmarks[263];
-  
-      const leftEyeX =
-        leftEye.x * planeWidth - planeWidth / 2;
-      const leftEyeY =
-        planeHeight / 2 - leftEye.y * planeHeight;
-  
-      const rightEyeX =
-        rightEye.x * planeWidth - planeWidth / 2;
-      const rightEyeY =
-        planeHeight / 2 - rightEye.y * planeHeight;
-  
-      const eyeCenterX = (leftEyeX + rightEyeX) / 2;
-      const eyeCenterY = (leftEyeY + rightEyeY) / 2;
-  
-      const eyeDistance = Math.hypot(
-        rightEyeX - leftEyeX,
-        rightEyeY - leftEyeY
-      );
-  
-      const eyeAngle = Math.atan2(
-        rightEyeY - leftEyeY,
-        rightEyeX - leftEyeX
-      );
-  
-      const referenceEyeDistance = 76;
-      const faceScale = eyeDistance / referenceEyeDistance;
-  
-      // Aplicar posición, rotación y escala a los anteojos.
-      glasses.position.set(
-        eyeCenterX,
-        eyeCenterY,
-        10
-      );
-  
-      glasses.rotation.set(
-        faceRotation.x,
-        faceRotation.y,
-        eyeAngle + faceRotation.z,
-        "YXZ"
-      );
-  
-      glasses.scale.setScalar(faceScale);
-    }
-  
-    renderer.render(scene, camera);
-  }
-  
-  animate();
- }
+  return video;
 }
 
+/* -------------------------------------------------------------------------- */
+/* Capas visuales: selfie y puntos de depuración                              */
+/* -------------------------------------------------------------------------- */
+
+function createSelfiePlane(video, sceneHeight) {
+  const aspectRatio = video.videoWidth / video.videoHeight;
+  const height = sceneHeight * SELFIE_HEIGHT_RATIO;
+  const width = height * aspectRatio;
+
+  const mesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(width, height),
+    new THREE.MeshBasicMaterial({
+      map: new THREE.VideoTexture(video),
+      depthWrite: false,
+    })
+  );
+  mesh.position.z = Z_LAYERS.selfie;
+  mesh.renderOrder = 0;
+
+  return { mesh, width, height };
+}
+
+function createLandmarkLayer(video, planeWidth, planeHeight) {
+  const canvas = document.createElement("canvas");
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+
+  const context = canvas.getContext("2d");
+  const texture = new THREE.CanvasTexture(canvas);
+
+  const mesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(planeWidth, planeHeight),
+    new THREE.MeshBasicMaterial({
+      map: texture,
+      transparent: true,
+      depthWrite: false,
+    })
+  );
+  mesh.position.z = Z_LAYERS.landmarks;
+  mesh.renderOrder = 1;
+
+  function draw(landmarks) {
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.fillStyle = "red";
+
+    for (const index of DEBUG_POINTS) {
+      const point = landmarks[index];
+
+      context.beginPath();
+      context.arc(point.x * canvas.width, point.y * canvas.height, 8, 0, Math.PI * 2);
+      context.fill();
+    }
+
+    texture.needsUpdate = true;
+  }
+
+  return { mesh, draw };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Medición del rostro                                                        */
+/* -------------------------------------------------------------------------- */
+
+// Convierte los landmarks de los ojos en valores de escena y en píxeles de video.
+function measureFace(landmarks, video, selfie) {
+  const leftEye = landmarks[LANDMARKS.LEFT_EYE];
+  const rightEye = landmarks[LANDMARKS.RIGHT_EYE];
+
+  const eyeDistancePixels = Math.hypot(
+    (rightEye.x - leftEye.x) * video.videoWidth,
+    (rightEye.y - leftEye.y) * video.videoHeight
+  );
+
+  const toScene = (point) => ({
+    x: point.x * selfie.width - selfie.width / 2,
+    y: selfie.height / 2 - point.y * selfie.height,
+  });
+  const left = toScene(leftEye);
+  const right = toScene(rightEye);
+
+  return {
+    eyeDistancePixels,
+    faceCenterX: (leftEye.x + rightEye.x) / 2,
+    eyeCenter: { x: (left.x + right.x) / 2, y: (left.y + right.y) / 2 },
+    eyeDistance: Math.hypot(right.x - left.x, right.y - left.y),
+    eyeAngle: Math.atan2(right.y - left.y, right.x - left.x),
+  };
+}
+
+function evaluatePosition({ eyeDistancePixels, faceCenterX }) {
+  const isCentered =
+    faceCenterX >= FACE_CENTER_X_RANGE.min &&
+    faceCenterX <= FACE_CENTER_X_RANGE.max;
+  const isCorrectDistance =
+    eyeDistancePixels >= EYE_DISTANCE_RANGE.min &&
+    eyeDistancePixels <= EYE_DISTANCE_RANGE.max;
+
+  let message = "Distancia correcta";
+  if (!isCentered) {
+    message = "Centrá tu rostro frente a la cámara";
+  } else if (eyeDistancePixels < EYE_DISTANCE_RANGE.min) {
+    message = "Acercate un poco a la cámara";
+  } else if (eyeDistancePixels > EYE_DISTANCE_RANGE.max) {
+    message = "Alejate un poco de la cámara";
+  }
+
+  return { isValid: isCorrectDistance && isCentered, message };
+}
+
+function updateFaceRotation(result, faceRotation) {
+  const matrixData = result.facialTransformationMatrixes?.[0]?.data;
+  if (!matrixData) return;
+
+  const rotationMatrix = new THREE.Matrix4().fromArray(matrixData);
+  faceRotation.setFromRotationMatrix(rotationMatrix, "YXZ");
+}
+
+function placeGlasses(glasses, metrics, faceRotation) {
+  glasses.position.set(metrics.eyeCenter.x, metrics.eyeCenter.y, Z_LAYERS.glasses);
+  glasses.rotation.set(
+    faceRotation.x,
+    faceRotation.y,
+    metrics.eyeAngle + faceRotation.z,
+    "YXZ"
+  );
+  glasses.scale.setScalar(metrics.eyeDistance / REFERENCE_EYE_DISTANCE);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Panel de calibración (UI)                                                  */
+/* -------------------------------------------------------------------------- */
+
+function sliderHtml(key) {
+  const { label, min, max, step } = SLIDERS[key];
+
+  return `
+    <label>
+      ${label}
+      <input id="slider-${key}" type="range" min="${min}" max="${max}"
+             step="${step}" value="0" style="width:100%;">
+    </label>
+    <div id="slider-${key}-value"></div>
+    <br>
+  `;
+}
+
+function createCalibrationPanel() {
+  const panel = document.createElement("div");
+
+  Object.assign(panel.style, {
+    position: "fixed",
+    top: "10px",
+    left: "10px",
+    zIndex: "9999",
+    padding: "8px",
+    background: "rgba(0, 0, 0, 0.85)",
+    color: "white",
+    fontFamily: "Arial, sans-serif",
+    fontSize: "12px",
+    borderRadius: "8px",
+    width: "200px",
+    maxHeight: "calc(100vh - 40px)",
+    overflowY: "auto",
+    boxSizing: "border-box",
+  });
+
+  const productOptions = Object.values(products)
+    .map(
+      (product) =>
+        `<option value="${product.id}" ${
+          product.id === defaultProductId ? "selected" : ""
+        }>${product.name}</option>`
+    )
+    .join("");
+
+  panel.innerHTML = `
+    <div style="margin-bottom:8px;font-weight:bold;">Probador virtual</div>
+
+    <label>
+      Modelo
+      <select id="product-selector" style="width:100%;margin-top:4px;">
+        ${productOptions}
+      </select>
+    </label>
+
+    <div style="margin-top:12px;margin-bottom:8px;font-weight:bold;">
+      Calibración de gafas
+    </div>
+    ${CALIBRATION_KEYS.map(sliderHtml).join("")}
+
+    <div style="margin-bottom:8px;font-weight:bold;">Rotación del modelo</div>
+    ${ROTATION_KEYS.map(sliderHtml).join("")}
+
+    <button id="save-calibration"
+            style="width:100%;padding:9px;cursor:pointer;font-weight:bold;">
+      Guardar calibración
+    </button>
+  `;
+  document.body.appendChild(panel);
+
+  const sliders = {};
+  for (const key of [...CALIBRATION_KEYS, ...ROTATION_KEYS]) {
+    const input = panel.querySelector(`#slider-${key}`);
+    const label = panel.querySelector(`#slider-${key}-value`);
+
+    const refreshLabel = () => {
+      label.textContent = SLIDERS[key].format(input.value);
+    };
+
+    sliders[key] = {
+      input,
+      refreshLabel,
+      get value() {
+        return Number(input.value);
+      },
+      setValue(value) {
+        input.value = value;
+        refreshLabel();
+      },
+    };
+  }
+
+  return {
+    selector: panel.querySelector("#product-selector"),
+    saveButton: panel.querySelector("#save-calibration"),
+    sliders,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Productos (modelos 3D) y calibración                                       */
+/* -------------------------------------------------------------------------- */
+
+function applyCalibration({ model, config }) {
+  model.scale.setScalar(config.scale);
+  model.position.set(config.offsetX, config.offsetY, config.offsetZ);
+}
+
+function syncPanelWithProduct(ui, product, config) {
+  const { sliders } = ui;
+
+  // El rango de la escala depende del tamaño original de cada modelo.
+  sliders.scale.input.min = Math.min(3, config.scale);
+  sliders.scale.input.max = Math.max(15, config.scale * 1.5);
+  sliders.scale.input.step = config.scale >= 100 ? 1 : 0.05;
+
+  sliders.scale.setValue(config.scale);
+  sliders.offsetX.setValue(config.offsetX);
+  sliders.offsetY.setValue(config.offsetY);
+  sliders.offsetZ.setValue(config.offsetZ);
+
+  sliders.rotationX.setValue(THREE.MathUtils.radToDeg(product.modelRotation.x));
+  sliders.rotationY.setValue(THREE.MathUtils.radToDeg(product.modelRotation.y));
+  sliders.rotationZ.setValue(THREE.MathUtils.radToDeg(product.modelRotation.z));
+}
+
+// Carga productos .glb y los reemplaza dentro del grupo `glasses`.
+function createProductManager(glasses, ui) {
+  const loader = new GLTFLoader();
+  let loadVersion = 0;
+
+  const initialProduct = products[defaultProductId];
+  const state = {
+    product: initialProduct,
+    model: new THREE.Group(),
+    config: { ...initialProduct.calibration },
+  };
+  glasses.add(state.model);
+
+  function loadProduct(productId) {
+    const product = products[productId];
+    if (!product) {
+      console.error("Producto inexistente:", productId);
+      return;
+    }
+
+    const currentLoad = ++loadVersion;
+
+    loader.load(
+      product.modelUrl,
+      (gltf) => {
+        // Si el usuario cambió de producto mientras cargaba, se descarta.
+        if (currentLoad !== loadVersion) return;
+
+        const model = gltf.scene;
+
+        const size = new THREE.Box3().setFromObject(model).getSize(new THREE.Vector3());
+        console.log("Producto:", product.name, "| dimensiones originales:", {
+          x: size.x,
+          y: size.y,
+          z: size.z,
+        });
+
+        model.rotation.set(
+          product.modelRotation.x,
+          product.modelRotation.y,
+          product.modelRotation.z
+        );
+
+        glasses.remove(state.model);
+        state.product = product;
+        state.model = model;
+        state.config = { ...product.calibration };
+        glasses.add(model);
+
+        applyCalibration(state);
+        syncPanelWithProduct(ui, product, state.config);
+
+        console.log("Producto cargado:", product.name);
+      },
+      undefined,
+      (error) => {
+        console.error("Error al cargar el producto:", product.modelUrl, error);
+      }
+    );
+  }
+
+  ui.selector.addEventListener("change", () => loadProduct(ui.selector.value));
+  loadProduct(defaultProductId);
+
+  return state;
+}
+
+function bindCalibrationControls(ui, state) {
+  const { sliders } = ui;
+
+  for (const key of CALIBRATION_KEYS) {
+    sliders[key].input.addEventListener("input", () => {
+      state.config[key] = sliders[key].value;
+      applyCalibration(state);
+      sliders[key].refreshLabel();
+    });
+  }
+
+  const updateModelRotation = () => {
+    const rotation = {
+      x: THREE.MathUtils.degToRad(sliders.rotationX.value),
+      y: THREE.MathUtils.degToRad(sliders.rotationY.value),
+      z: THREE.MathUtils.degToRad(sliders.rotationZ.value),
+    };
+
+    Object.assign(state.product.modelRotation, rotation);
+    state.model.rotation.set(rotation.x, rotation.y, rotation.z);
+
+    ROTATION_KEYS.forEach((key) => sliders[key].refreshLabel());
+  };
+
+  for (const key of ROTATION_KEYS) {
+    sliders[key].input.addEventListener("input", updateModelRotation);
+  }
+}
+
+function formatRotation(value) {
+  if (Math.abs(value + Math.PI / 2) < 0.000001) return "-Math.PI / 2";
+  if (Math.abs(value - Math.PI / 2) < 0.000001) return "Math.PI / 2";
+  return Number(value.toFixed(6)).toString();
+}
+
+// Genera el bloque listo para pegar en products.js.
+function buildProductSnippet({ product, config }) {
+  const { modelRotation } = product;
+
+  return `"${product.id}": {
+    id: "${product.id}",
+    name: ${JSON.stringify(product.name)},
+    modelUrl: ${JSON.stringify(product.modelUrl)},
+    calibration: {
+      scale: ${config.scale},
+      offsetX: ${config.offsetX},
+      offsetY: ${config.offsetY},
+      offsetZ: ${config.offsetZ},
+    },
+    modelRotation: {
+      x: ${formatRotation(modelRotation.x)},
+      y: ${formatRotation(modelRotation.y)},
+      z: ${formatRotation(modelRotation.z)},
+    },
+  },`;
+}
+
+function bindSaveButton(ui, state) {
+  ui.saveButton.addEventListener("click", async () => {
+    const snippet = buildProductSnippet(state);
+
+    console.log("=== CALIBRACIÓN PARA products.js ===");
+    console.log(snippet);
+    console.log("=== FIN DE LA CALIBRACIÓN ===");
+
+    try {
+      await navigator.clipboard.writeText(snippet);
+      ui.saveButton.textContent = "¡Copiado!";
+      setTimeout(() => {
+        ui.saveButton.textContent = "Guardar calibración";
+      }, 2000);
+    } catch {
+      console.warn(
+        "No se pudo copiar automáticamente. Copiá el bloque desde la consola."
+      );
+    }
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Loop de render                                                             */
+/* -------------------------------------------------------------------------- */
+
+function startRenderLoop({
+  renderer,
+  scene,
+  camera,
+  video,
+  faceLandmarker,
+  selfie,
+  landmarkLayer,
+  glasses,
+  distanceGuide,
+}) {
+  const faceRotation = new THREE.Euler(0, 0, 0, "YXZ");
+
+  let validFrames = 0;
+  let trackingReady = false;
+
+  const REQUIRED_VALID_FRAMES = 8;
+
+  function animate() {
+    requestAnimationFrame(animate);
+
+    const result = faceLandmarker.detectForVideo(video, performance.now());
+
+    if (result.faceLandmarks.length > 0) {
+      const landmarks = result.faceLandmarks[0];
+
+      updateFaceRotation(result, faceRotation);
+      landmarkLayer.draw(landmarks);
+
+      const metrics = measureFace(landmarks, video, selfie);
+      const position = evaluatePosition(metrics);
+
+      placeGlasses(glasses, metrics, faceRotation);
+      glasses.visible = position.isValid;
+      distanceGuide.textContent = position.message;
+    } else {
+      glasses.visible = false;
+      distanceGuide.textContent = "Ubicá tu rostro frente a la cámara";
+    }
+
+    renderer.render(scene, camera);
+  }
+
+  animate();
+}
+
+/* -------------------------------------------------------------------------- */
+/* Punto de entrada                                                           */
+/* -------------------------------------------------------------------------- */
+
+async function main() {
+  const { scene, camera, renderer, height } = createScene();
+  const distanceGuide = createDistanceGuide();
+
+  const faceLandmarker = await createFaceLandmarker();
+  const video = await startCamera();
+
+  const selfie = createSelfiePlane(video, height);
+  const landmarkLayer = createLandmarkLayer(video, selfie.width, selfie.height);
+
+  const glasses = new THREE.Group();
+  glasses.renderOrder = 2;
+
+  scene.add(selfie.mesh, landmarkLayer.mesh, glasses);
+
+  const ui = createCalibrationPanel();
+  const productState = createProductManager(glasses, ui);
+  bindCalibrationControls(ui, productState);
+  bindSaveButton(ui, productState);
+
+  startRenderLoop({
+    renderer,
+    scene,
+    camera,
+    video,
+    faceLandmarker,
+    selfie,
+    landmarkLayer,
+    glasses,
+    distanceGuide,
+  });
+}
 
 main().catch((error) => {
   console.error("Error al iniciar el probador virtual:", error);
