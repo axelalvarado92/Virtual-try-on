@@ -40,18 +40,18 @@ const REFERENCE_FACE_WIDTH = 140;
 const REFERENCE_FACE_HEIGHT = 210;
 
 const SMOOTHING = {
-  positionBase: 0.50,
+  positionBase: 0.75,
   positionMovement: 0.020,
-  positionMin: 0.50,
-  positionMax: 0.85,
-  rotationBase: 0.45,
+  positionMin: 0.75,
+  positionMax: 1,
+  rotationBase: 0.65,
   rotationChange: 0.80,
-  rotationMin: 0.45,
-  rotationMax: 0.90,
-  scaleBase: 0.30,
+  rotationMin: 0.65,
+  rotationMax: 1,
+  scaleBase: 0.55,
   scaleMovement: 0.01,
-  scaleMin: 0.30,
-  scaleMax: 0.65,
+  scaleMin: 0.55,
+  scaleMax: 0.9,
 };
 
 const SELFIE_HEIGHT_RATIO = 0.9;
@@ -61,7 +61,7 @@ const OCCLUSION = {
   depthOffset: 40,
 };
 
-const TEMPLE_CLIP_DEPTH = 105; // cuánto de la patilla queda visible (en unidades locales)
+const TEMPLE_CLIP_DEPTH = 95; // cuánto de la patilla queda visible (en unidades locales)
 const localTempleClipPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), TEMPLE_CLIP_DEPTH);
 const templeClipPlane = new THREE.Plane();
 
@@ -268,8 +268,20 @@ function createLandmarkLayer(video, planeWidth, planeHeight) {
     throw new Error("No se pudieron generar triángulos faciales.");
   }
 
+  // La teselación deja huecos en los ojos: se rellenan desde el centro del iris.
+  const EYE_FILLS = [
+    { connections: FaceLandmarker.FACE_LANDMARKS_RIGHT_EYE, center: 468 },
+    { connections: FaceLandmarker.FACE_LANDMARKS_LEFT_EYE, center: 473 },
+  ];
+  
+  for (const { connections: eyeConnections, center } of EYE_FILLS) {
+    for (const { start, end } of eyeConnections) {
+      triangleIndices.push(center, start, end);
+    }
+  }
+
   const occlusionGeometry = new THREE.BufferGeometry();
-  const landmarkCount = Math.max(...adjacency.keys()) + 1;
+  const landmarkCount = 478;
   const positions = new Float32Array(landmarkCount * 3);
 
   occlusionGeometry.setAttribute(
