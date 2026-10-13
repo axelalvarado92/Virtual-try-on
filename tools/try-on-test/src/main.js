@@ -14,6 +14,13 @@ const FACE_MODEL_PATH = "/face_landmarker.task";
 const LANDMARKS = {
   LEFT_EYE: 33,
   RIGHT_EYE: 263,
+  LEFT_TEMPLE: 127,
+  RIGHT_TEMPLE: 356,
+  LEFT_CHEEK: 234,
+  RIGHT_CHEEK: 454,
+  FOREHEAD: 10,
+  CHIN: 175,
+  NOSE_BRIDGE: 168,
 };
 
 // Puntos rojos de depuración dibujados sobre el video.
@@ -26,12 +33,37 @@ const DEBUG_POINTS = [
 ];
 
 // Valores iniciales de prueba; se calibran con la cámara real.
-const EYE_DISTANCE_RANGE = { min: 130, max: 190 }; // en píxeles del video
-const FACE_CENTER_X_RANGE = { min: 0.375, max: 0.625 }; // normalizado 0..1
+const EYE_DISTANCE_RANGE = { min: 90, max: 260 }; // en píxeles del video
+const FACE_CENTER_X_RANGE = { min: 0.2, max: 0.9 }; // normalizado 0..1
 const REFERENCE_EYE_DISTANCE = 76; // en unidades de escena
+const REFERENCE_FACE_WIDTH = 140;
+const REFERENCE_FACE_HEIGHT = 210;
+
+const SMOOTHING = {
+  positionBase: 0.50,
+  positionMovement: 0.020,
+  positionMin: 0.50,
+  positionMax: 0.85,
+  rotationBase: 0.45,
+  rotationChange: 0.80,
+  rotationMin: 0.45,
+  rotationMax: 0.90,
+  scaleBase: 0.30,
+  scaleMovement: 0.01,
+  scaleMin: 0.30,
+  scaleMax: 0.65,
+};
 
 const SELFIE_HEIGHT_RATIO = 0.9;
 const Z_LAYERS = { selfie: 0, landmarks: 2, glasses: 10 };
+const OCCLUSION = {
+  depthScale: 0.002,
+  depthOffset: 40,
+};
+
+const TEMPLE_CLIP_DEPTH = 105; // cuánto de la patilla queda visible (en unidades locales)
+const localTempleClipPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), TEMPLE_CLIP_DEPTH);
+const templeClipPlane = new THREE.Plane();
 
 // Definición de los sliders del panel de calibración.
 const SLIDERS = {
@@ -71,6 +103,8 @@ function createScene() {
   renderer.setClearColor(0x000000, 0);
   document.body.appendChild(renderer.domElement);
 
+  renderer.localClippingEnabled = true;
+
   const light = new THREE.DirectionalLight(0xffffff, 2);
   light.position.set(0, 0, 100);
   scene.add(light);
@@ -108,16 +142,21 @@ function createDistanceGuide() {
 /* Cámara y detección facial                                                  */
 /* -------------------------------------------------------------------------- */
 
+
 async function createFaceLandmarker() {
   const vision = await FilesetResolver.forVisionTasks(MEDIAPIPE_WASM_URL);
 
   return FaceLandmarker.createFromOptions(vision, {
-    baseOptions: { modelAssetPath: FACE_MODEL_PATH },
+    baseOptions: {
+      modelAssetPath: FACE_MODEL_PATH,
+      delegate: "GPU",
+    },
     runningMode: "VIDEO",
     numFaces: 1,
     outputFacialTransformationMatrixes: true,
   });
 }
+
 
 async function startCamera() {
   const video = document.createElement("video");
@@ -169,6 +208,7 @@ function createSelfiePlane(video, sceneHeight) {
   return { mesh, width, height };
 }
 
+
 function createLandmarkLayer(video, planeWidth, planeHeight) {
   const canvas = document.createElement("canvas");
   canvas.width = video.videoWidth;
@@ -177,7 +217,8 @@ function createLandmarkLayer(video, planeWidth, planeHeight) {
   const context = canvas.getContext("2d");
   const texture = new THREE.CanvasTexture(canvas);
 
-  const mesh = new THREE.Mesh(
+  // Capa visual de depuración: conserva los puntos rojos.
+  const debugMesh = new THREE.Mesh(
     new THREE.PlaneGeometry(planeWidth, planeHeight),
     new THREE.MeshBasicMaterial({
       map: texture,
@@ -185,8 +226,73 @@ function createLandmarkLayer(video, planeWidth, planeHeight) {
       depthWrite: false,
     })
   );
-  mesh.position.z = Z_LAYERS.landmarks;
-  mesh.renderOrder = 1;
+
+  debugMesh.position.z = Z_LAYERS.landmarks;
+  debugMesh.renderOrder = 2;
+
+  // Construye los triángulos a partir de las conexiones de teselación.
+  const connections = FaceLandmarker.FACE_LANDMARKS_TESSELATION;
+
+  if (!connections?.length) {
+    throw new Error(
+      "MediaPipe no expone FACE_LANDMARKS_TESSELATION."
+    );
+  }
+
+  const adjacency = new Map();
+
+  for (const { start, end } of connections) {
+    if (!adjacency.has(start)) adjacency.set(start, new Set());
+    if (!adjacency.has(end)) adjacency.set(end, new Set());
+
+    adjacency.get(start).add(end);
+    adjacency.get(end).add(start);
+  }
+
+  const triangleIndices = [];
+
+  for (const [a, neighbors] of adjacency) {
+    for (const b of neighbors) {
+      if (b <= a) continue;
+
+      for (const c of neighbors) {
+        if (c <= b) continue;
+        if (adjacency.get(b)?.has(c)) {
+          triangleIndices.push(a, b, c);
+        }
+      }
+    }
+  }
+
+  if (triangleIndices.length === 0) {
+    throw new Error("No se pudieron generar triángulos faciales.");
+  }
+
+  const occlusionGeometry = new THREE.BufferGeometry();
+  const landmarkCount = Math.max(...adjacency.keys()) + 1;
+  const positions = new Float32Array(landmarkCount * 3);
+
+  occlusionGeometry.setAttribute(
+    "position",
+    new THREE.BufferAttribute(positions, 3)
+  );
+  occlusionGeometry.setIndex(triangleIndices);
+
+  // No escribe color: solo actualiza el búfer de profundidad.
+  const occlusionMaterial = new THREE.MeshBasicMaterial({
+    colorWrite: false,
+    depthWrite: true,
+    depthTest: true,
+    side: THREE.DoubleSide,
+  });
+
+  const occlusionMesh = new THREE.Mesh(
+    occlusionGeometry,
+    occlusionMaterial
+  );
+
+  occlusionMesh.renderOrder = 1;
+  occlusionMesh.frustumCulled = false;
 
   function draw(landmarks) {
     context.clearRect(0, 0, canvas.width, canvas.height);
@@ -194,17 +300,59 @@ function createLandmarkLayer(video, planeWidth, planeHeight) {
 
     for (const index of DEBUG_POINTS) {
       const point = landmarks[index];
+      if (!point) continue;
 
       context.beginPath();
-      context.arc(point.x * canvas.width, point.y * canvas.height, 8, 0, Math.PI * 2);
+      context.arc(
+        point.x * canvas.width,
+        point.y * canvas.height,
+        8,
+        0,
+        Math.PI * 2
+      );
       context.fill();
     }
 
     texture.needsUpdate = true;
+
+    const positionAttribute =
+      occlusionGeometry.attributes.position;
+
+    for (let i = 0; i < landmarkCount; i++) {
+      const point = landmarks[i];
+
+      if (!point) continue;
+
+      positionAttribute.setXYZ(
+        i,
+        point.x * planeWidth - planeWidth / 2,
+        planeHeight / 2 - point.y * planeHeight,
+        Z_LAYERS.glasses -
+          point.z * planeWidth * OCCLUSION.depthScale -
+          OCCLUSION.depthOffset
+      );
+    }
+
+    positionAttribute.needsUpdate = true;
+    occlusionGeometry.computeBoundingSphere();
   }
 
-  return { mesh, draw };
+  function dispose() {
+    debugMesh.geometry.dispose();
+    debugMesh.material.dispose();
+    texture.dispose();
+    occlusionGeometry.dispose();
+    occlusionMaterial.dispose();
+  }
+
+  return {
+    mesh: debugMesh,
+    occlusionMesh,
+    draw,
+    dispose,
+  };
 }
+
 
 /* -------------------------------------------------------------------------- */
 /* Medición del rostro                                                        */
@@ -212,27 +360,78 @@ function createLandmarkLayer(video, planeWidth, planeHeight) {
 
 // Convierte los landmarks de los ojos en valores de escena y en píxeles de video.
 function measureFace(landmarks, video, selfie) {
-  const leftEye = landmarks[LANDMARKS.LEFT_EYE];
-  const rightEye = landmarks[LANDMARKS.RIGHT_EYE];
+  const getPoint = (index) => landmarks[index];
 
-  const eyeDistancePixels = Math.hypot(
-    (rightEye.x - leftEye.x) * video.videoWidth,
-    (rightEye.y - leftEye.y) * video.videoHeight
-  );
+  const leftEye = getPoint(LANDMARKS.LEFT_EYE);
+  const rightEye = getPoint(LANDMARKS.RIGHT_EYE);
+  const leftTemple = getPoint(LANDMARKS.LEFT_TEMPLE);
+  const rightTemple = getPoint(LANDMARKS.RIGHT_TEMPLE);
+  const leftCheek = getPoint(LANDMARKS.LEFT_CHEEK);
+  const rightCheek = getPoint(LANDMARKS.RIGHT_CHEEK);
+  const forehead = getPoint(LANDMARKS.FOREHEAD);
+  const chin = getPoint(LANDMARKS.CHIN);
+  const noseBridge = getPoint(LANDMARKS.NOSE_BRIDGE);
 
   const toScene = (point) => ({
     x: point.x * selfie.width - selfie.width / 2,
     y: selfie.height / 2 - point.y * selfie.height,
   });
+
+  const toVideoPixels = (point) => ({
+    x: point.x * video.videoWidth,
+    y: point.y * video.videoHeight,
+  });
+
+  const distance2D = (a, b) => {
+    const dx = a.x - b.x;
+    const dy = a.y - b.y;
+
+    return Math.hypot(dx, dy);
+  };
+
+  const eyeLeftPixels = toVideoPixels(leftEye);
+  const eyeRightPixels = toVideoPixels(rightEye);
+
+  const eyeDistancePixels = distance2D(
+    eyeLeftPixels,
+    eyeRightPixels
+  );
+
+  const faceWidthPixels = Math.max(
+    distance2D(
+      toVideoPixels(leftTemple),
+      toVideoPixels(rightTemple)
+    ),
+    distance2D(
+      toVideoPixels(leftCheek),
+      toVideoPixels(rightCheek)
+    ),
+    eyeDistancePixels
+  );
+
+  const faceHeightPixels = distance2D(
+    toVideoPixels(forehead),
+    toVideoPixels(chin)
+  );
+
   const left = toScene(leftEye);
   const right = toScene(rightEye);
+  const noseBridgeScene = toScene(noseBridge);
 
   return {
+    noseBridge: noseBridgeScene,
     eyeDistancePixels,
+    faceWidthPixels,
+    faceHeightPixels,
     faceCenterX: (leftEye.x + rightEye.x) / 2,
-    eyeCenter: { x: (left.x + right.x) / 2, y: (left.y + right.y) / 2 },
-    eyeDistance: Math.hypot(right.x - left.x, right.y - left.y),
-    eyeAngle: Math.atan2(right.y - left.y, right.x - left.x),
+    eyeCenter: {
+      x: (left.x + right.x) / 2,
+      y: (left.y + right.y) / 2,
+    },
+    eyeDistance: Math.hypot(
+      right.x - left.x,
+      right.y - left.y
+    ),
   };
 }
 
@@ -256,23 +455,78 @@ function evaluatePosition({ eyeDistancePixels, faceCenterX }) {
   return { isValid: isCorrectDistance && isCentered, message };
 }
 
-function updateFaceRotation(result, faceRotation) {
-  const matrixData = result.facialTransformationMatrixes?.[0]?.data;
-  if (!matrixData) return;
 
-  const rotationMatrix = new THREE.Matrix4().fromArray(matrixData);
-  faceRotation.setFromRotationMatrix(rotationMatrix, "YXZ");
+const faceRotationMatrix = new THREE.Matrix4();
+
+const faceFlipQuaternion = new THREE.Quaternion()
+  .setFromAxisAngle(
+    new THREE.Vector3(0, 0, 1),
+    Math.PI
+  );
+
+function updateFaceRotation(landmarks, video, selfie, faceRotation) {
+  const toFaceSpace = (index) => {
+    const point = landmarks[index];
+
+    return new THREE.Vector3(
+      point.x * selfie.width - selfie.width / 2,
+      selfie.height / 2 - point.y * selfie.height,
+      -point.z * selfie.width
+    );
+  };
+
+  const leftEye = toFaceSpace(LANDMARKS.LEFT_EYE);
+  const rightEye = toFaceSpace(LANDMARKS.RIGHT_EYE);
+  const forehead = toFaceSpace(LANDMARKS.FOREHEAD);
+  const chin = toFaceSpace(LANDMARKS.CHIN);
+
+  const xAxis = rightEye
+    .clone()
+    .sub(leftEye)
+    .normalize();
+
+  const yRaw = forehead
+    .clone()
+    .sub(chin)
+    .normalize();
+
+  const zAxis = xAxis
+    .clone()
+    .cross(yRaw)
+    .normalize();
+
+  if (zAxis.z < 0) {
+    zAxis.negate();
+  }
+
+  const yAxis = zAxis
+    .clone()
+    .cross(xAxis)
+    .normalize();
+
+  faceRotationMatrix.makeBasis(xAxis, yAxis, zAxis);
+  faceRotation.setFromRotationMatrix(faceRotationMatrix);
 }
 
-function placeGlasses(glasses, metrics, faceRotation) {
-  glasses.position.set(metrics.eyeCenter.x, metrics.eyeCenter.y, Z_LAYERS.glasses);
-  glasses.rotation.set(
-    faceRotation.x,
-    faceRotation.y,
-    metrics.eyeAngle + faceRotation.z,
-    "YXZ"
-  );
-  glasses.scale.setScalar(metrics.eyeDistance / REFERENCE_EYE_DISTANCE);
+
+function placeGlasses(metrics, faceRotation) {
+  const widthScale =
+    metrics.faceWidthPixels / REFERENCE_FACE_WIDTH;
+
+  const heightScale =
+    metrics.faceHeightPixels / REFERENCE_FACE_HEIGHT;
+
+  const scale = widthScale * 0.7 + heightScale * 0.3;
+
+  return {
+    position: new THREE.Vector3(
+      metrics.noseBridge.x,
+      metrics.noseBridge.y,
+      Z_LAYERS.glasses
+    ),
+    quaternion: faceRotation.clone(),
+    scale: new THREE.Vector3(scale, scale, scale),
+  };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -433,6 +687,14 @@ function createProductManager(glasses, ui) {
 
         const model = gltf.scene;
 
+        model.traverse((child) => {
+          if (!child.isMesh) return;
+          child.renderOrder = 3;
+          [].concat(child.material).forEach((material) => {
+            material.clippingPlanes = [templeClipPlane];
+          });
+        });
+
         const size = new THREE.Box3().setFromObject(model).getSize(new THREE.Vector3());
         console.log("Producto:", product.name, "| dimensiones originales:", {
           x: size.x,
@@ -564,8 +826,16 @@ function startRenderLoop({
   glasses,
   distanceGuide,
 }) {
-  const faceRotation = new THREE.Euler(0, 0, 0, "YXZ");
+  const faceRotation = new THREE.Quaternion();
 
+  const smoothed = {
+    ready: false,
+    position: new THREE.Vector3(),
+    quaternion: new THREE.Quaternion(),
+    scale: new THREE.Vector3(1, 1, 1),
+    previousPosition: new THREE.Vector3(),
+  };
+  
   let validFrames = 0;
   let trackingReady = false;
 
@@ -574,24 +844,110 @@ function startRenderLoop({
   function animate() {
     requestAnimationFrame(animate);
 
-    const result = faceLandmarker.detectForVideo(video, performance.now());
+    const detectionStart = performance.now();
+
+    const result = faceLandmarker.detectForVideo(
+      video,
+      performance.now()
+    );
+    
+    const detectionDuration = performance.now() - detectionStart;
+  
 
     if (result.faceLandmarks.length > 0) {
       const landmarks = result.faceLandmarks[0];
 
-      updateFaceRotation(result, faceRotation);
+      updateFaceRotation(
+        landmarks,
+        video,
+        selfie,
+        faceRotation
+      );
+      
       landmarkLayer.draw(landmarks);
-
+      
       const metrics = measureFace(landmarks, video, selfie);
       const position = evaluatePosition(metrics);
+      const target = placeGlasses(metrics, faceRotation);
+      
+      const movement = target.position.distanceTo(
+        smoothed.previousPosition
+      );
+      
+      const rotationDelta =
+        2 *
+        Math.acos(
+          THREE.MathUtils.clamp(
+            Math.abs(smoothed.quaternion.dot(target.quaternion)),
+            0,
+            1
+          )
+        );
+      
+      const alphaPosition = THREE.MathUtils.clamp(
+        SMOOTHING.positionBase +
+          movement * SMOOTHING.positionMovement,
+        SMOOTHING.positionMin,
+        SMOOTHING.positionMax
+      );
+      
+      const alphaRotation = THREE.MathUtils.clamp(
+        SMOOTHING.rotationBase +
+          rotationDelta * SMOOTHING.rotationChange,
+        SMOOTHING.rotationMin,
+        SMOOTHING.rotationMax
+      );
+      
+      const alphaScale = THREE.MathUtils.clamp(
+        SMOOTHING.scaleBase +
+          movement * SMOOTHING.scaleMovement,
+        SMOOTHING.scaleMin,
+        SMOOTHING.scaleMax
+      );
+      
+      if (!smoothed.ready) {
+        smoothed.position.copy(target.position);
+        smoothed.quaternion.copy(target.quaternion);
+        smoothed.scale.copy(target.scale);
+        smoothed.ready = true;
+      } else {
+        smoothed.position.lerp(target.position, alphaPosition);
+        smoothed.quaternion.slerp(target.quaternion, alphaRotation);
+        smoothed.scale.lerp(target.scale, alphaScale);
+      }
+      
+      smoothed.previousPosition.copy(target.position);
+      
+      glasses.position.copy(smoothed.position);
+      glasses.quaternion.copy(smoothed.quaternion);
+      glasses.scale.copy(smoothed.scale);
 
-      placeGlasses(glasses, metrics, faceRotation);
-      glasses.visible = position.isValid;
-      distanceGuide.textContent = position.message;
+      if (position.isValid) {
+        validFrames++;
+      
+        if (validFrames >= REQUIRED_VALID_FRAMES) {
+          trackingReady = true;
+        }
+      } else {
+        validFrames = 0;
+        trackingReady = false;
+      }
+      
+      glasses.visible = trackingReady;
+      
+      distanceGuide.textContent = position.isValid
+        ? trackingReady
+          ? "Distancia correcta"
+          : "Mantené la posición..."
+        : position.message;
+
     } else {
       glasses.visible = false;
       distanceGuide.textContent = "Ubicá tu rostro frente a la cámara";
+      smoothed.ready = false;
     }
+    glasses.updateMatrixWorld();
+    templeClipPlane.copy(localTempleClipPlane).applyMatrix4(glasses.matrixWorld);
 
     renderer.render(scene, camera);
   }
@@ -617,6 +973,7 @@ async function main() {
   glasses.renderOrder = 2;
 
   scene.add(selfie.mesh, landmarkLayer.mesh, glasses);
+  scene.add(landmarkLayer.occlusionMesh);
 
   const ui = createCalibrationPanel();
   const productState = createProductManager(glasses, ui);
