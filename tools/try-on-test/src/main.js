@@ -67,7 +67,7 @@ const TEMPLE_MAX_ANGLE = THREE.MathUtils.degToRad(70); // límite para evitar gi
 const TEMPLE_SMOOTHING = 0.5;
 const EAR_EXTEND = 1.25; // >1 mueve el objetivo hacia atrás, más allá del borde de la cara
 
-const TEMPLE_CLIP_DEPTH = 95; // cuánto de la patilla queda visible (en unidades locales)
+const TEMPLE_CLIP_DEPTH = 110; // cuánto de la patilla queda visible (en unidades locales)
 const localTempleClipPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), TEMPLE_CLIP_DEPTH);
 const templeClipPlane = new THREE.Plane();
 
@@ -891,42 +891,73 @@ function bindSaveButton(ui, state) {
 }
 
 // Envuelve cada patilla en un pivote ubicado en su bisagra y guarda su dirección de reposo.
+
 function setupTemples(model, templeNames) {
   if (!templeNames) return [];
 
   model.updateMatrixWorld(true);
-  const modelCenter = new THREE.Box3().setFromObject(model).getCenter(new THREE.Vector3());
+
+  const modelCenter = new THREE.Box3()
+    .setFromObject(model)
+    .getCenter(new THREE.Vector3());
 
   return Object.entries(templeNames).flatMap(([side, name]) => {
     const node = model.getObjectByName(name);
+
     if (!node) {
       console.warn("Patilla no encontrada en el modelo:", name);
       return [];
     }
 
+    node.updateMatrixWorld(true);
+
     const box = new THREE.Box3().setFromObject(node);
     const size = box.getSize(new THREE.Vector3());
     const center = box.getCenter(new THREE.Vector3());
 
-    // La bisagra es el extremo de la patilla más cercano al centro del armazón.
-    const axis = ["x", "y", "z"].reduce((a, b) => (size[b] > size[a] ? b : a));
-    const hinge = center.clone();
-    hinge[axis] = modelCenter[axis] < center[axis] ? box.min[axis] : box.max[axis];
+    // Identifica el eje longitudinal de la patilla.
+    const axis = ["x", "y", "z"].reduce((a, b) =>
+      size[b] > size[a] ? b : a
+    );
+
+    // Determina el extremo más cercano al centro del armazón.
+    const hingeWorld = center.clone();
+    hingeWorld[axis] =
+      modelCenter[axis] < center[axis]
+        ? box.min[axis]
+        : box.max[axis];
+
+    // Convierte la bisagra al sistema local del padre original.
+    const originalParent = node.parent;
+    const hingeLocal = originalParent.worldToLocal(
+      hingeWorld.clone()
+    );
 
     const pivot = new THREE.Group();
-    pivot.position.copy(hinge);
-    node.parent.add(pivot);
+    pivot.position.copy(hingeLocal);
+    originalParent.add(pivot);
+
+    // Conserva la transformación mundial original de la patilla.
     pivot.updateMatrixWorld(true);
     pivot.attach(node);
+
+    // Calculate the temple direction relative to its pivot.
+    node.updateMatrixWorld(true);
+    pivot.updateMatrixWorld(true);
+    
+    const centerLocal = pivot.worldToLocal(center.clone());
+    
+    const restDirection = centerLocal.normalize();
 
     return [{
       node: pivot,
       earIndex: TEMPLE_EAR_LANDMARKS[side],
       restQuaternion: pivot.quaternion.clone(),
-      restDirection: center.clone().sub(hinge).normalize(),
+      restDirection,
     }];
   });
 }
+
 
 // Gira cada patilla sobre su bisagra para que apunte a la oreja.
 
