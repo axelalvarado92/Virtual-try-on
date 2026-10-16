@@ -30,6 +30,8 @@ const DEBUG_POINTS = [
   1, // nariz
   61, // boca
   291, // boca
+  234, 
+  454, // objetivo base de las patillas
 ];
 
 // Valores iniciales de prueba; se calibran con la cámara real.
@@ -57,9 +59,13 @@ const SMOOTHING = {
 const SELFIE_HEIGHT_RATIO = 0.9;
 const Z_LAYERS = { selfie: 0, landmarks: 2, glasses: 10 };
 const OCCLUSION = {
-  depthScale: 0.002,
+  depthScale: 0.3,
   depthOffset: 40,
 };
+const TEMPLE_EAR_LANDMARKS = { left: 234, right: 454 };
+const TEMPLE_MAX_ANGLE = THREE.MathUtils.degToRad(70); // límite para evitar giros extraños
+const TEMPLE_SMOOTHING = 0.5;
+const EAR_EXTEND = 1.25; // >1 mueve el objetivo hacia atrás, más allá del borde de la cara
 
 const TEMPLE_CLIP_DEPTH = 95; // cuánto de la patilla queda visible (en unidades locales)
 const localTempleClipPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), TEMPLE_CLIP_DEPTH);
@@ -679,6 +685,7 @@ function createProductManager(glasses, ui) {
     product: initialProduct,
     model: new THREE.Group(),
     config: { ...initialProduct.calibration },
+    temples: [],
   };
   glasses.add(state.model);
 
@@ -698,6 +705,7 @@ function createProductManager(glasses, ui) {
         if (currentLoad !== loadVersion) return;
 
         const model = gltf.scene;
+        state.temples = setupTemples(model, product.temples);
 
         model.traverse((child) => {
           if (!child.isMesh) return;
@@ -709,6 +717,11 @@ function createProductManager(glasses, ui) {
 
         const size = new THREE.Box3().setFromObject(model).getSize(new THREE.Vector3());
         console.log("Producto:", product.name, "| dimensiones originales:", {
+          x: size.x,
+          y: size.y,
+          z: size.z,
+        });
+        console.log("Dimensiones GLB Modelo 003:", {
           x: size.x,
           y: size.y,
           z: size.z,
@@ -823,6 +836,85 @@ function bindSaveButton(ui, state) {
   });
 }
 
+// Envuelve cada patilla en un pivote ubicado en su bisagra y guarda su dirección de reposo.
+function setupTemples(model, templeNames) {
+  if (!templeNames) return [];
+
+  model.updateMatrixWorld(true);
+  const modelCenter = new THREE.Box3().setFromObject(model).getCenter(new THREE.Vector3());
+
+  return Object.entries(templeNames).flatMap(([side, name]) => {
+    const node = model.getObjectByName(name);
+    if (!node) {
+      console.warn("Patilla no encontrada en el modelo:", name);
+      return [];
+    }
+
+    const box = new THREE.Box3().setFromObject(node);
+    const size = box.getSize(new THREE.Vector3());
+    const center = box.getCenter(new THREE.Vector3());
+
+    // La bisagra es el extremo de la patilla más cercano al centro del armazón.
+    const axis = ["x", "y", "z"].reduce((a, b) => (size[b] > size[a] ? b : a));
+    const hinge = center.clone();
+    hinge[axis] = modelCenter[axis] < center[axis] ? box.min[axis] : box.max[axis];
+
+    const pivot = new THREE.Group();
+    pivot.position.copy(hinge);
+    node.parent.add(pivot);
+    pivot.updateMatrixWorld(true);
+    pivot.attach(node);
+
+    return [{
+      node: pivot,
+      earIndex: TEMPLE_EAR_LANDMARKS[side],
+      restQuaternion: pivot.quaternion.clone(),
+      restDirection: center.clone().sub(hinge).normalize(),
+    }];
+  });
+}
+
+// Gira cada patilla sobre su bisagra para que apunte a la oreja.
+
+const earPoint = new THREE.Vector3();
+const targetDirection = new THREE.Vector3();
+const aimDelta = new THREE.Quaternion();
+const limitedDelta = new THREE.Quaternion();
+const targetQuaternion = new THREE.Quaternion();
+const bridgePoint = new THREE.Vector3();
+
+function aimTemples(temples, landmarks, selfie) {
+  const noseBridgeZ = landmarks[LANDMARKS.NOSE_BRIDGE].z;
+
+  for (const { node, earIndex, restQuaternion, restDirection } of temples) {
+    const ear = landmarks[earIndex];
+
+    earPoint.set(
+      ear.x * selfie.width - selfie.width / 2,
+      selfie.height / 2 - ear.y * selfie.height,
+      Z_LAYERS.glasses - (ear.z - noseBridgeZ) * selfie.width
+    );
+
+    const bridge = landmarks[LANDMARKS.NOSE_BRIDGE];
+    bridgePoint.set(
+      bridge.x * selfie.width - selfie.width / 2,
+      selfie.height / 2 - bridge.y * selfie.height,
+      Z_LAYERS.glasses
+    );
+    // Extrapola desde el puente de la nariz a través del borde de la cara hasta la oreja estimada.
+    earPoint.sub(bridgePoint).multiplyScalar(EAR_EXTEND).add(bridgePoint);
+
+    node.parent.worldToLocal(earPoint);
+    targetDirection.copy(earPoint).sub(node.position).normalize();
+
+    aimDelta.setFromUnitVectors(restDirection, targetDirection);
+    limitedDelta.identity().rotateTowards(aimDelta, TEMPLE_MAX_ANGLE);
+
+    targetQuaternion.copy(restQuaternion).premultiply(limitedDelta);
+    node.quaternion.slerp(targetQuaternion, TEMPLE_SMOOTHING);
+  }
+}
+
 /* -------------------------------------------------------------------------- */
 /* Loop de render                                                             */
 /* -------------------------------------------------------------------------- */
@@ -837,6 +929,7 @@ function startRenderLoop({
   landmarkLayer,
   glasses,
   distanceGuide,
+  productState,
 }) {
   const faceRotation = new THREE.Quaternion();
 
@@ -933,6 +1026,8 @@ function startRenderLoop({
       glasses.position.copy(smoothed.position);
       glasses.quaternion.copy(smoothed.quaternion);
       glasses.scale.copy(smoothed.scale);
+      glasses.updateMatrixWorld(true);
+      aimTemples(productState.temples, landmarks, selfie);
 
       if (position.isValid) {
         validFrames++;
@@ -1002,6 +1097,7 @@ async function main() {
     landmarkLayer,
     glasses,
     distanceGuide,
+    productState,
   });
 }
 
