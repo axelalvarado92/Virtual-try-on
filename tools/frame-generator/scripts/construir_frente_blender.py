@@ -1,4 +1,5 @@
 ﻿import bpy
+import bmesh
 import json
 import sys
 from pathlib import Path
@@ -33,30 +34,37 @@ data = json.loads(
     ARCHIVO_CONTORNOS.read_text(encoding="utf-8")
 )
 
+# Ajustes opcionales por modelo (si el archivo no existe, se usan los valores por defecto).
+ARCHIVO_PARAMETROS = CARPETA_MODELO / "parametros-bisagra.json"
+parametros = (
+    json.loads(ARCHIVO_PARAMETROS.read_text(encoding="utf-8"))
+    if ARCHIVO_PARAMETROS.exists()
+    else {}
+)
+
 # Dimensiones físicas en metros.
 FRONT_WIDTH = 0.140
 FRONT_THICKNESS = 0.002
 TEMPLE_LENGTH = 0.142
 TEMPLE_RADIUS = 0.0015
 
+# ---------------------------------------------------------------------
+# Bisagra y extensión del frente (endpiece).
+# ---------------------------------------------------------------------
+# Altura de la bisagra: fracción de la altura del frente medida desde arriba.
+HINGE_HEIGHT_RATIO = parametros.get("altura_relativa", 0.17)
+HINGE_BAND = parametros.get("banda_busqueda", 0.04)
+
+ENDPIECE_LENGTH = parametros.get("largo_extension", 0.010)
+ENDPIECE_WIDTH = parametros.get("ancho_extension", 0.003)
+ENDPIECE_HEIGHT = parametros.get("alto_extension", 0.004)
+# Cuánto se mete la extensión dentro del frente para que queden unidos.
+ENDPIECE_OVERLAP = 0.0005
+
 x0, y0, pixel_width, pixel_height = data["0"]["bbox"]
 scale = FRONT_WIDTH / pixel_width
 
-# Extremos laterales y centro vertical del frente.
 outer_points = data["0"]["points"]
-outer_x_min = min(point[0] for point in outer_points)
-outer_x_max = max(point[0] for point in outer_points)
-
-HINGE_LEFT_X = (
-    outer_x_min - (x0 + pixel_width / 2)
-) * scale
-
-HINGE_RIGHT_X = (
-    outer_x_max - (x0 + pixel_width / 2)
-) * scale
-
-HINGE_Y = 0.0
-HINGE_Z = -FRONT_THICKNESS / 2
 
 
 def signed_area(points):
@@ -74,6 +82,40 @@ def image_to_local(px, py):
     x = (px - (x0 + pixel_width / 2)) * scale
     y = ((y0 + pixel_height / 2) - py) * scale
     return x, y
+
+
+# Altura de la bisagra (misma para ambos lados).
+hinge_py = y0 + pixel_height * HINGE_HEIGHT_RATIO
+HINGE_Y = image_to_local(0, hinge_py)[1]
+
+
+def find_outer_x(side):
+    """Borde exterior del frente a la altura de la bisagra.
+
+    side: -1 = izquierda, 1 = derecha.
+    Si no hay puntos en la franja, se usa el extremo global del contorno.
+    """
+    band = [
+        p for p in outer_points
+        if abs(p[1] - hinge_py) <= pixel_height * HINGE_BAND
+    ]
+    pool = band or outer_points
+
+    px = (
+        min(p[0] for p in pool)
+        if side < 0
+        else max(p[0] for p in pool)
+    )
+    return image_to_local(px, hinge_py)[0]
+
+
+# La bisagra queda apenas hacia adentro del borde exterior, para que la
+# cara externa de la extensión quede al ras del frente.
+HINGE_LEFT_X = find_outer_x(-1) + ENDPIECE_WIDTH / 2
+HINGE_RIGHT_X = find_outer_x(1) - ENDPIECE_WIDTH / 2
+
+# La bisagra está detrás de la cara trasera del frente, al final de la extensión.
+HINGE_Z = -FRONT_THICKNESS / 2 - ENDPIECE_LENGTH
 
 
 # Escena y colección independientes para cada modelo.
@@ -117,7 +159,6 @@ curve.resolution_u = 1
 curve.fill_mode = "BOTH"
 curve.extrude = FRONT_THICKNESS / 2
 
-outer_points = data["0"]["points"]
 outer_sign = 1 if signed_area(outer_points) >= 0 else -1
 
 for key in ("0", "1", "3"):
@@ -148,6 +189,47 @@ bpy.ops.object.convert(target="MESH")
 front = bpy.context.object
 front.name = "FrenteArmazon"
 
+
+# ---------------------------------------------------------------------
+# Extensiones del frente: unen el borde exterior con la bisagra.
+# ---------------------------------------------------------------------
+def create_endpiece(name, hinge_x):
+    """Caja que sale hacia atrás desde el frente hasta la bisagra."""
+    back_face_z = -FRONT_THICKNESS / 2
+    z_start = back_face_z + ENDPIECE_OVERLAP  # se mete un poco en el frente
+    z_end = HINGE_Z
+
+    mesh = bpy.data.meshes.new(f"Geometria_{name}")
+    bm = bmesh.new()
+    bmesh.ops.create_cube(bm, size=1.0)
+
+    for vert in bm.verts:
+        vert.co.x = hinge_x + vert.co.x * ENDPIECE_WIDTH
+        vert.co.y = HINGE_Y + vert.co.y * ENDPIECE_HEIGHT
+        vert.co.z = (z_start + z_end) / 2 + vert.co.z * (z_start - z_end)
+
+    bm.to_mesh(mesh)
+    bm.free()
+
+    obj = bpy.data.objects.new(name, mesh)
+    coleccion.objects.link(obj)
+    obj.data.materials.append(frame_mat)
+    return obj
+
+
+left_endpiece = create_endpiece("ExtensionIzquierda", HINGE_LEFT_X)
+right_endpiece = create_endpiece("ExtensionDerecha", HINGE_RIGHT_X)
+
+# Unir las extensiones al frente: el GLB sigue teniendo un solo nodo "FrenteArmazon".
+bpy.ops.object.select_all(action="DESELECT")
+for objeto in (front, left_endpiece, right_endpiece):
+    objeto.select_set(True)
+bpy.context.view_layer.objects.active = front
+bpy.ops.object.join()
+front = bpy.context.object
+front.name = "FrenteArmazon"
+
+
 # ---------------------------------------------------------------------
 # Patillas: geometría 3D separada, detrás del frente (Z negativo).
 # El recorrido es paramétrico y se podrá calibrar después.
@@ -177,21 +259,22 @@ def create_temple(name, side, hinge_x):
     spline.points.add(3)
 
     # Coordenadas locales: el primer punto coincide con la bisagra.
+    
     path = [
         (0.0, 0.0, 0.0),
         (
-            side * 0.004,
-            -0.002,
+            side * 0.002,
+            -0.003,
             -TEMPLE_LENGTH * 0.30,
         ),
         (
-            side * 0.010,
-            -0.006,
+            side * 0.005,
+            -0.009,
             -TEMPLE_LENGTH * 0.68,
         ),
         (
-            side * 0.016,
-            -0.014,
+            side * 0.008,
+            -0.018,
             -TEMPLE_LENGTH,
         ),
     ]
@@ -285,6 +368,11 @@ print(
 print(f"Ancho frontal objetivo: {FRONT_WIDTH * 1000:.1f} mm")
 print(f"Alto frontal derivado: {pixel_height * scale * 1000:.2f} mm")
 print(f"Longitud de referencia por patilla: {TEMPLE_LENGTH * 1000:.1f} mm")
+print(
+    "Bisagras (mm): "
+    f"izq=({HINGE_LEFT_X * 1000:.1f}, {HINGE_Y * 1000:.1f}, {HINGE_Z * 1000:.1f}) "
+    f"der=({HINGE_RIGHT_X * 1000:.1f}, {HINGE_Y * 1000:.1f}, {HINGE_Z * 1000:.1f})"
+)
 print(f"Objetos: {front.name}, {left_temple.name}, {right_temple.name}")
 print(f"BLEND: {blend_path}")
 print(f"GLB: {glb_path}")

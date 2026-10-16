@@ -89,33 +89,45 @@ const ROTATION_KEYS = ["rotationX", "rotationY", "rotationZ"];
 /* -------------------------------------------------------------------------- */
 
 function createScene() {
-  const width = window.innerWidth;
-  const height = window.innerHeight;
-
   const scene = new THREE.Scene();
 
   const camera = new THREE.OrthographicCamera(
-    -width / 2,
-    width / 2,
-    height / 2,
-    -height / 2,
+    -1,
+    1,
+    1,
+    -1,
     0.1,
     1000
   );
+
   camera.position.z = 100;
 
-  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-  renderer.setSize(width, height);
-  renderer.setClearColor(0x000000, 0);
-  document.body.appendChild(renderer.domElement);
+  const renderer = new THREE.WebGLRenderer({
+    antialias: true,
+    alpha: true,
+  });
 
+  renderer.setPixelRatio(window.devicePixelRatio || 1);
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setClearColor(0x000000, 0);
   renderer.localClippingEnabled = true;
+
+  Object.assign(renderer.domElement.style, {
+    position: "fixed",
+    inset: "0",
+    width: "100%",
+    height: "100%",
+    display: "block",
+    pointerEvents: "none",
+  });
+
+  document.body.appendChild(renderer.domElement);
 
   const light = new THREE.DirectionalLight(0xffffff, 2);
   light.position.set(0, 0, 100);
   scene.add(light);
 
-  return { scene, camera, renderer, height };
+  return { scene, camera, renderer };
 }
 
 function createDistanceGuide() {
@@ -198,25 +210,50 @@ async function startCamera() {
 
 function createSelfiePlane(video, sceneHeight) {
   const aspectRatio = video.videoWidth / video.videoHeight;
-  const height = sceneHeight * SELFIE_HEIGHT_RATIO;
-  const width = height * aspectRatio;
+  let height = sceneHeight * SELFIE_HEIGHT_RATIO;
+  let width = height * aspectRatio;
+
+  const geometry = new THREE.PlaneGeometry(width, height);
 
   const mesh = new THREE.Mesh(
-    new THREE.PlaneGeometry(width, height),
+    geometry,
     new THREE.MeshBasicMaterial({
       map: new THREE.VideoTexture(video),
       depthWrite: false,
     })
   );
+
   mesh.position.z = Z_LAYERS.selfie;
   mesh.renderOrder = 0;
 
-  return { mesh, width, height };
+  function resize(nextSceneHeight) {
+    height = nextSceneHeight * SELFIE_HEIGHT_RATIO;
+    width = height * aspectRatio;
+  
+    mesh.geometry.dispose();
+    mesh.geometry = new THREE.PlaneGeometry(width, height);
+  
+    return { width, height };
+  }
+
+  return {
+    mesh,
+    get width() {
+      return width;
+    },
+    get height() {
+      return height;
+    },
+    resize,
+  };
 }
 
 
 function createLandmarkLayer(video, planeWidth, planeHeight) {
   const canvas = document.createElement("canvas");
+
+  let currentPlaneWidth = planeWidth;
+  let currentPlaneHeight = planeHeight;
   canvas.width = video.videoWidth;
   canvas.height = video.videoHeight;
 
@@ -343,10 +380,10 @@ function createLandmarkLayer(video, planeWidth, planeHeight) {
 
       positionAttribute.setXYZ(
         i,
-        point.x * planeWidth - planeWidth / 2,
-        planeHeight / 2 - point.y * planeHeight,
+        point.x * currentPlaneWidth - currentPlaneWidth / 2,
+        currentPlaneHeight / 2 - point.y * currentPlaneHeight,
         Z_LAYERS.glasses -
-          point.z * planeWidth * OCCLUSION.depthScale -
+          point.z * currentPlaneWidth * OCCLUSION.depthScale -
           OCCLUSION.depthOffset
       );
     }
@@ -363,9 +400,21 @@ function createLandmarkLayer(video, planeWidth, planeHeight) {
     occlusionMaterial.dispose();
   }
 
+  function resize(nextPlaneWidth, nextPlaneHeight) {
+    currentPlaneWidth = nextPlaneWidth;
+    currentPlaneHeight = nextPlaneHeight;
+
+    debugMesh.geometry.dispose();
+    debugMesh.geometry = new THREE.PlaneGeometry(
+      currentPlaneWidth,
+      currentPlaneHeight
+    );
+  }
+
   return {
     mesh: debugMesh,
     occlusionMesh,
+    resize,
     draw,
     dispose,
   };
@@ -399,6 +448,11 @@ function measureFace(landmarks, video, selfie) {
     x: point.x * video.videoWidth,
     y: point.y * video.videoHeight,
   });
+  
+  const toReferencePixels = (point) => ({
+    x: point.x * 1280,
+    y: point.y * 720,
+  });
 
   const distance2D = (a, b) => {
     const dx = a.x - b.x;
@@ -407,29 +461,29 @@ function measureFace(landmarks, video, selfie) {
     return Math.hypot(dx, dy);
   };
 
-  const eyeLeftPixels = toVideoPixels(leftEye);
-  const eyeRightPixels = toVideoPixels(rightEye);
-
+  const eyeLeftPixels = toReferencePixels(leftEye);
+  const eyeRightPixels = toReferencePixels(rightEye);
+  
   const eyeDistancePixels = distance2D(
     eyeLeftPixels,
     eyeRightPixels
   );
-
+  
   const faceWidthPixels = Math.max(
     distance2D(
-      toVideoPixels(leftTemple),
-      toVideoPixels(rightTemple)
+      toReferencePixels(leftTemple),
+      toReferencePixels(rightTemple)
     ),
     distance2D(
-      toVideoPixels(leftCheek),
-      toVideoPixels(rightCheek)
+      toReferencePixels(leftCheek),
+      toReferencePixels(rightCheek)
     ),
     eyeDistancePixels
   );
-
+  
   const faceHeightPixels = distance2D(
-    toVideoPixels(forehead),
-    toVideoPixels(chin)
+    toReferencePixels(forehead),
+    toReferencePixels(chin)
   );
 
   const left = toScene(leftEye);
@@ -1067,14 +1121,37 @@ function startRenderLoop({
 /* -------------------------------------------------------------------------- */
 
 async function main() {
-  const { scene, camera, renderer, height } = createScene();
+  const { scene, camera, renderer } = createScene();
   const distanceGuide = createDistanceGuide();
 
   const faceLandmarker = await createFaceLandmarker();
   const video = await startCamera();
 
-  const selfie = createSelfiePlane(video, height);
+  const selfie = createSelfiePlane(video, window.innerHeight);
   const landmarkLayer = createLandmarkLayer(video, selfie.width, selfie.height);
+
+  function resizeScene() {
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+  
+    camera.left = -width / 2;
+    camera.right = width / 2;
+    camera.top = height / 2;
+    camera.bottom = -height / 2;
+    camera.updateProjectionMatrix();
+  
+    renderer.setSize(width, height);
+  
+    const dimensions = selfie.resize(height);
+  
+    landmarkLayer.resize(
+      dimensions.width,
+      dimensions.height
+    );
+  }
+  
+  resizeScene();
+  window.addEventListener("resize", resizeScene);
 
   const glasses = new THREE.Group();
   glasses.renderOrder = 2;

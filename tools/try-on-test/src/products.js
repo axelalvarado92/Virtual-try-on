@@ -37,17 +37,17 @@ export const products = {
   "glasses-003": {
     id: "glasses-003",
     name: "Armazón FIDEI - Modelo 003",
-    modelUrl: "/armazon-frente-prueba.glb",
+    modelUrl: "/armazon-frente-generado.glb",
     calibration: {
-      scale: 828,
-      offsetX: 29,
-      offsetY: 4,
-      offsetZ: -79,
+      scale: 986,
+      offsetX: 1,
+      offsetY: -8,
+      offsetZ: 4,
     },
     modelRotation: {
-      x: 0.087266,
-      y: 0.017453,
-      z: -0.10472,
+      x: 1.640609,
+      y: 0.034907,
+      z: 0.034907,
     },
   },
 
